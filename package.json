@@ -1,0 +1,12 @@
+{
+  "name": "vibe2api",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "start:bun": "bun src/server.js",
+    "build:worker": "rm -rf .wbuild && mkdir -p .wbuild && cd cfwork && wrangler deploy --dry-run --outdir ../.wbuild",
+    "test": "bun test",
+    "test:all": "npm run build:worker && bun test"
+  }
+}

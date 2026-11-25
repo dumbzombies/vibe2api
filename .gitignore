@@ -1,0 +1,13 @@
+node_modules/
+.wbuild/
+cfwork/.wrangler/
+*.log
+.env
+keys.json
+.crash.log
+.test-crash.log
+.crashprobe.mjs
+.wrangler/
+
+# Local session memory bank (deployment-specific, never published)
+.agents/

@@ -1,0 +1,20 @@
+{
+  "name": "vibe2api",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-01",
+  "observability": { "enabled": true },
+  // Serve it on workers.dev (default). To put it behind your own domain, add:
+  //   "routes": [{ "pattern": "vibe.example.com", "custom_domain": true }]
+  //
+  // KV is optional but strongly recommended on a deployed Worker: it persists
+  // the dashboard password hash and minted proxy keys across isolate recycling.
+  // Without it the dashboard falls back to first-run setup on every isolate,
+  // and minted keys disappear.
+  //   npx wrangler kv namespace create MV_CONFIG   # paste the id below
+  // "kv_namespaces": [{ "binding": "KV", "id": "<namespace id>" }],
+  "rules": [
+    // The dashboard markup is imported as text by worker.js; without this rule
+    // the import resolves to a module wrapper instead of a string.
+    { "type": "Text", "globs": ["**/*.html"], "fallthrough": true }
+  ]
+}

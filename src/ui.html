@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>vibe2api</title>
+<style>
+  :root {
+    --bg: #0a0a0b; --side: #0d0d10; --surface: #121214; --surface-2: #17171b; --surface-3: #1f1f25;
+    --border: #1e1e23; --border-strong: #2c2c33;
+    --text: #ededf0; --muted: #a9a9b4; --faint: #85858f;
+    --accent: #ff5c26; --accent-soft: rgba(255,92,38,.13); --accent-border: rgba(255,92,38,.34);
+    --on-accent: #2a0c04;
+    --ok: #4ade80; --warn: #fbbf24; --bad: #e0304f;
+    --radius: 16px; --radius-sm: 9px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { color-scheme: dark; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.55 var(--font); -webkit-font-smoothing: antialiased; padding-bottom: env(safe-area-inset-bottom); }
+  ::selection { background: var(--accent); color: var(--on-accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 5px; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #26262d; border-radius: 8px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-track { background: transparent; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 2px; }
+  button {
+    font: 600 13px/1 var(--font); color: var(--text); background: var(--surface-2);
+    border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 9px 14px;
+    cursor: pointer; transition: border-color .18s ease, background .18s ease, transform .12s ease;
+  }
+  button:hover { border-color: #3d3d49; background: var(--surface-3); }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  button.primary:hover { background: #ff7043; border-color: #ff7043; }
+  button.danger { color: var(--bad); border-color: rgba(248,113,113,.34); }
+  button.danger:hover { background: rgba(248,113,113,.1); border-color: rgba(248,113,113,.5); }
+  button:disabled { opacity: .55; cursor: wait; }
+  input, select, textarea { font: 13px/1.5 var(--font); color: var(--text); background: var(--surface);
+    border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 9px 11px; width: 100%; }
+  textarea { resize: vertical; }
+  code, pre, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .faint { color: var(--faint); }
+
+  /* ---------- shell ---------- */
+  .shell { display: grid; grid-template-columns: 236px minmax(0,1fr); min-height: 100vh; }
+  .side { position: sticky; top: 0; align-self: start; height: 100vh; display: flex; flex-direction: column;
+    background: var(--side); border-right: 1px solid var(--border); padding: 20px 14px 16px; }
+  .brand { display: flex; align-items: center; gap: 11px; padding: 0 8px; min-width: 0; }
+  .mark { width: 32px; height: 32px; border-radius: 10px; flex: none; background: var(--surface-2);
+    border: 1px solid var(--border-strong); display: grid; place-items: center;
+    font: 700 15px/1 var(--mono); color: var(--accent); }
+  .brand h1 { font-size: 15px; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
+  .brand .sub { color: var(--faint); font-size: 12px; font-weight: 450; }
+  .tabs { display: flex; flex-direction: column; gap: 2px; margin-top: 24px; }
+  .tab { position: relative; display: flex; align-items: center; gap: 10px; width: 100%;
+    font: 600 13.5px/1 var(--font); color: var(--muted); background: transparent;
+    border: 1px solid transparent; border-radius: var(--radius-sm); padding: 10px 11px; text-align: left;
+    transition: color .15s ease, background .15s ease; }
+  .tab:hover { color: var(--text); background: var(--surface-2); border-color: transparent; }
+  .tab.active { color: var(--text); background: var(--surface-2); }
+  .tab.active::before { content: ""; position: absolute; left: -1px; top: 9px; bottom: 9px; width: 2px;
+    border-radius: 2px; background: var(--accent); }
+  .tab .ico { width: 16px; height: 16px; flex: none; opacity: .9; }
+  .tab.active .ico { color: var(--accent); opacity: 1; }
+  .tabpanel[hidden] { display: none; }
+  .side-sp { flex: 1; }
+  .side-foot { display: flex; flex-direction: column; gap: 9px; padding: 0 8px; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 550; color: var(--muted); }
+  .status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+  .status.ok { color: var(--ok); } .status.ok .dot { background: var(--ok); box-shadow: 0 0 0 3px rgba(74,222,128,.12); }
+  .status.warn { color: var(--warn); } .status.warn .dot { background: var(--warn); box-shadow: 0 0 0 3px rgba(251,191,36,.12); }
+  .status.bad { color: var(--bad); } .status.bad .dot { background: var(--bad); box-shadow: 0 0 0 3px rgba(224,48,79,.14); }
+  .side-actions { display: flex; gap: 8px; }
+  .side-actions button { flex: 1; padding: 8px 10px; font-size: 12.5px; }
+  .synced { font-size: 12px; }
+  .nokey { font-size: 11.5px; line-height: 1.45; color: var(--faint); }
+
+  .content { min-width: 0; padding: 26px clamp(18px, 3.5vw, 40px) 40px; }
+  .page { max-width: 1120px; margin: 0 auto; }
+
+  /* ---------- panels ---------- */
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+  .panel + .panel, .panel + .grid-charts, .grid-charts + .panel, .hero + .grid-charts, .hero + .panel, .panel + .hero { margin-top: 14px; }
+  .panel-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+  .panel-head h2 { font-size: 13.5px; font-weight: 650; letter-spacing: .01em; }
+  .panel-head .hint { font-size: 12px; color: var(--faint); margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  /* ---------- hero ---------- */
+  .hero { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; padding: 20px 22px 6px; }
+  .hero-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .hero-label { font-size: 11.5px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+  .hero-id { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--muted); min-width: 0; font-family: var(--mono); }
+  .hero-num { font-size: clamp(38px, 5.5vw, 52px); font-weight: 700; letter-spacing: -.03em; line-height: 1.05;
+    margin-top: 10px; font-variant-numeric: tabular-nums; }
+  .hero-num .unit { font-size: 14px; font-weight: 500; color: var(--muted); letter-spacing: 0; margin-left: 10px; }
+  .track { height: 7px; background: var(--surface-3); border-radius: 999px; margin: 16px 0 10px; overflow: hidden; }
+  .track > div { height: 100%; width: 0; border-radius: 999px; background: var(--accent);
+    transition: width .7s cubic-bezier(.22,1,.36,1); }
+  .track > div.warn { background: var(--warn); }
+  .track > div.bad { background: var(--bad); }
+  .hero-meta { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+  .hero-meta .right { display: flex; gap: 16px; align-items: baseline; }
+  .hero-meta b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
+  .hero-meta .pct { font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .statrow { display: flex; flex-wrap: wrap; gap: 10px 36px; padding: 16px 0 18px;
+    border-top: 1px solid var(--border); margin-top: 16px; }
+  .statrow .item { display: flex; flex-direction: column; gap: 3px; min-width: 72px; }
+  .statrow .k { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--faint); white-space: nowrap; }
+  .statrow .v { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .statrow .v.mono { font-size: 14px; }
+
+  /* ---------- charts ---------- */
+  .grid-charts { display: grid; grid-template-columns: 1.35fr 1fr; gap: 14px; }
+  svg.chart { width: 100%; height: 110px; display: block; overflow: visible; }
+  .chart rect { transition: opacity .15s; }
+  .chart rect:hover { opacity: .75; }
+  .chart-legend { display: flex; gap: 16px; margin-top: 10px; font-size: 11.5px; color: var(--faint); }
+  .chart-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 1px; }
+
+  /* ---------- tables ---------- */
+  .tablewrap { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th { text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--faint); padding: 7px 9px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 8px 9px; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: var(--surface-2); }
+
+  /* ---------- pills ---------- */
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600;
+    padding: 2px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); }
+  .pill.ok { color: var(--ok); border-color: rgba(74,222,128,.3); }
+  .pill.bad { color: var(--bad); border-color: rgba(224,48,79,.34); }
+  .pill.acc { color: var(--accent); border-color: var(--accent-border); background: var(--accent-soft); }
+
+  /* ---------- misc ---------- */
+  .kv { display: grid; grid-template-columns: 150px minmax(0,1fr); gap: 4px 12px; font-size: 13px; margin-top: 4px; }
+  .kv dt { color: var(--faint); font-size: 12px; } .kv dd { overflow-wrap: anywhere; }
+  pre.code { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 13px 14px;
+    font-size: 12px; overflow-x: auto; line-height: 1.6; margin-top: 8px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap: 12px; }
+  .modelrow { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 9px 0; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12.5px; }
+  .modelrow:last-child { border-bottom: 0; }
+  .modelrow .meta { font-family: var(--font); font-size: 11.5px; color: var(--faint); }
+  .modelrow button { padding: 5px 9px; font-size: 11px; }
+  .notice { display: none; background: rgba(251,191,36,.07); border: 1px solid rgba(251,191,36,.26);
+    color: #f2ce7b; border-radius: var(--radius); padding: 11px 14px; font-size: 13px; margin-bottom: 14px; }
+  .notice.show { display: block; }
+
+  /* ---------- setup wizard ---------- */
+  .wizard { border-color: var(--accent-border); background:
+    linear-gradient(180deg, var(--accent-soft), transparent 120px), var(--surface); }
+  .wiz-warn { display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 1.6;
+    color: #f2ce7b; background: rgba(251,191,36,.07); border: 1px solid rgba(251,191,36,.26);
+    border-radius: 11px; padding: 11px 13px; }
+  .wiz-warn strong { color: #ffd782; }
+  .wiz-warn code { font-size: 12px; background: rgba(0,0,0,.25); padding: 1px 5px; border-radius: 4px; }
+  .wiz-steps { list-style: none; display: flex; flex-direction: column; gap: 14px; margin: 16px 0 18px; }
+  .wiz-steps li { display: flex; gap: 12px; align-items: flex-start; }
+  .wiz-n { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+    font: 700 12px/1 var(--mono); color: var(--accent);
+    background: var(--accent-soft); border: 1px solid var(--accent-border); }
+  .wiz-steps strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
+  .wiz-steps p { font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+  .wiz-form { display: flex; gap: 8px; flex-wrap: wrap; }
+  .wiz-form input { flex: 1 1 220px; min-width: 0; }
+  .wiz-form button { flex: 0 0 auto; }
+  .wiz-note { font-size: 12px; margin-top: 9px; }
+  .wiz-note.ok { color: var(--ok); } .wiz-note.bad { color: var(--bad); }
+  @media (max-width: 640px) {
+    .wiz-steps { gap: 12px; margin: 14px 0 16px; }
+    .wiz-form { flex-direction: column; }
+    .wiz-form input, .wiz-form button { width: 100%; flex: 1 1 auto; }
+    .wiz-warn { font-size: 12.5px; padding: 10px 11px; }
+  }
+
+  /* ---------- toast ---------- */
+  .toast { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom));
+    transform: translate(-50%, 12px); background: var(--surface-3); border: 1px solid var(--border-strong);
+    color: var(--text); padding: 10px 16px; border-radius: 10px; font-size: 13px; font-weight: 550;
+    opacity: 0; pointer-events: none; transition: opacity .2s ease, transform .2s ease; z-index: 50;
+    max-width: calc(100vw - 32px); }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ---------- responsive ---------- */
+  @media (max-width: 980px) {
+    .shell { display: block; }
+    .side { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center;
+      gap: 12px 14px; padding: 12px 18px; border-right: 0; border-bottom: 1px solid var(--border); }
+    .brand { margin-right: auto; padding: 0; }
+    .tabs { order: 3; flex-direction: row; width: 100%; margin-top: 2px; overflow-x: auto; padding-bottom: 2px; }
+    .tab { width: auto; border-color: transparent; }
+    .tab.active::before { left: 9px; right: 9px; top: auto; bottom: 0; width: auto; height: 2px; }
+    .side-sp { display: none; }
+    .side-foot { flex-direction: row; align-items: center; gap: 10px; padding: 0; }
+    .synced { display: none; }
+    .content { padding: 16px 18px 40px; }
+    .grid-charts { grid-template-columns: 1fr; }
+    .statrow { gap: 10px 24px; }
+    .chat-main { height: 62dvh; min-height: 380px; }
+    .chat-side { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
+    .chat-side .side-block:first-child { grid-column: 1 / -1; }
+    .kv { grid-template-columns: 1fr; }
+    .kv dt { margin-top: 8px; }
+  }
+  @media (max-width: 640px) {
+    body { font-size: 15px; }
+    /* Compact sticky header. A fully-sticky sidebar ate ~440 of 2340px (19% of
+       the screen) on every scroll; a sticky *tab row alone* cannot work because
+       sticky is bounded by its parent's height, and the tabs are the sidebar's
+       last child — so it never actually stuck. This keeps the whole bar pinned
+       but strips it to ~150px: brand shrinks, the subtitle and "updated" line
+       go, and status + buttons share one row. */
+    .side { position: sticky; top: 0; z-index: 30; background: var(--bg);
+      height: auto; align-self: auto; align-content: flex-start;
+      padding: 8px 12px 6px; gap: 6px 10px;
+      border-bottom: 1px solid var(--border); }
+    .brand { gap: 8px; }
+    .brand .sub { display: none; }
+    .mark { width: 26px; height: 26px; border-radius: 8px; font-size: 12px; }
+    .side-foot { flex: 1 1 auto; width: auto; flex-direction: row; align-items: center;
+      justify-content: flex-end; gap: 8px; padding: 0; }
+    .side-actions button { padding: 6px 10px; font-size: 12px; }
+    .tabs { order: 4; width: 100%; }
+    .brand h1 { font-size: 14px; }
+    .brand .sub { font-size: 11px; }
+    /* Four tabs, one row, always: a wrapping tab row used to overlap the hero
+       number on a 360px-wide screen. An explicit grid makes that impossible. */
+    .tabs { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 4px;
+      overflow: visible; margin-top: 0; }
+    .tab { width: auto; min-width: 0; justify-content: center; padding: 9px 4px; font-size: 12.5px;
+      gap: 6px; white-space: nowrap; }
+    .tab .ico { width: 14px; height: 14px; }
+    .tab.active::before { left: 6px; right: 6px; }
+    .side-foot { width: 100%; justify-content: space-between; }
+    .side-actions { flex: 0 0 auto; }
+    .side-actions button, button { min-height: 40px; }
+    .status { font-size: 12px; }
+    .content { padding: 12px 12px calc(28px + env(safe-area-inset-bottom)); }
+    .panel { padding: 14px; border-radius: 14px; }
+    .panel-head { gap: 8px; flex-wrap: wrap; }
+    .panel-head .hint { margin-left: 0; }
+    .hero { padding: 16px 16px 4px; border-radius: 14px; }
+    .hero-top { gap: 8px; }
+    .hero-num { font-size: 40px; margin-top: 6px; }
+    .hero-num .unit { font-size: 13px; margin-left: 6px; }
+    .hero-meta { gap: 6px 12px; font-size: 12px; }
+    .hero-meta .right { gap: 12px; flex-wrap: wrap; }
+    .hero-id { font-size: 12px; overflow-wrap: anywhere; }
+    .statrow { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px 10px; padding: 14px 0; }
+    .statrow .item { min-width: 0; }
+    .statrow .k { letter-spacing: .05em; }
+    .statrow .v, .statrow .v.mono { font-size: 14px; overflow-wrap: anywhere; }
+    .grid-charts { gap: 10px; }
+    svg.chart { height: 96px; }
+    .chart-legend { gap: 12px; flex-wrap: wrap; }
+    .tablewrap { margin: 0 -2px; padding: 0 2px; }
+    th, td { padding: 6px 8px; }
+    th { font-size: 10px; letter-spacing: .06em; }
+    .log-ms, .log-ms-head { display: none; }
+    .chat-side { grid-template-columns: 1fr; }
+    .chat-main { height: 72dvh; }
+    .msg { max-width: 96%; }
+    .modelrow { flex-wrap: wrap; }
+    .modelrow .meta { text-align: left; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: .001ms !important; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="brand">
+      <div class="mark">mv</div>
+      <div><h1>vibe2api</h1><div class="sub">local control center</div></div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab active" role="tab" id="tabBtn-overview" data-tab="overview" aria-controls="tab-overview" aria-selected="true">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h8V3H3z"/><path d="M13 21h8v-8h-8z"/><path d="M13 9h8V3h-8z"/><path d="M3 21h8v-4H3z"/></svg>Overview</button>
+      <button class="tab" role="tab" id="tabBtn-models" data-tab="models" aria-controls="tab-models" aria-selected="false" tabindex="-1">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>Models</button>
+      <button class="tab" role="tab" id="tabBtn-keys" data-tab="keys" aria-controls="tab-keys" aria-selected="false" tabindex="-1">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M11 12 21 2"/><path d="m16 7 3 3"/></svg>Keys</button>
+      <button class="tab" role="tab" id="tabBtn-setup" data-tab="setup" aria-controls="tab-setup" aria-selected="false" tabindex="-1">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5 4.6l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-4.6l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>Setup</button>
+    </nav>
+    <div class="side-sp"></div>
+    <div class="side-foot">
+      <div class="status" id="statusPill" role="status" aria-live="polite"><span class="dot"></span><span id="statusTxt">connecting…</span></div>
+      <div class="side-actions">
+        <button id="refreshBtn">Refresh</button>
+        <button id="keyBtn">Key</button>
+        <button id="logout">Sign out</button>
+      </div>
+      <div class="synced faint" id="updatedTxt">connecting…</div>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="page">
+      <div class="notice" id="notice" role="alert"><span id="noticeTxt"></span></div>
+
+      <section class="tabpanel" id="tab-overview" role="tabpanel">
+        <section class="hero" aria-label="Vibe budget">
+          <div class="hero-top">
+            <span class="hero-label">Vibe allowance used this cycle</span>
+            <span class="hero-id" id="uaTxt">–</span>
+          </div>
+          <div class="hero-num"><span id="budgetPct">–</span><span class="unit" id="budgetOf">of $300 / month</span></div>
+          <div class="track"><div id="budgetBar" style="width:0%"></div></div>
+          <div class="hero-meta">
+            <span id="budgetWhen">–</span>
+            <span class="right" id="budgetSpent">–</span>
+          </div>
+          <div class="hero-meta" style="color:var(--faint);font-size:12px;padding-bottom:6px">
+            <span id="apiBudget">–</span>
+          </div>
+          <div class="statrow">
+            <div class="item"><span class="k">uptime</span><span class="v mono" id="sUptime">–</span></div>
+            <div class="item"><span class="k">requests</span><span class="v mono" id="sReqs">–</span></div>
+            <div class="item"><span class="k">errors</span><span class="v mono" id="sErrs">–</span></div>
+            <div class="item"><span class="k">tokens in / out</span><span class="v mono" id="sToks">–</span></div>
+            <div class="item"><span class="k">keys</span><span class="v mono" id="sKeys">–</span></div>
+            <div class="item"><span class="k">models</span><span class="v mono" id="sModels">–</span></div>
+            <div class="item"><span class="k">runtime</span><span class="v mono" id="sRuntime">–</span></div>
+            <div class="item"><span class="k">version</span><span class="v mono" id="sVersion">–</span></div>
+          </div>
+        </section>
+
+        <div class="grid-charts">
+          <section class="panel">
+            <div class="panel-head"><h2>Requests · last 24 hours</h2><span class="hint" id="chartHint"></span></div>
+            <svg class="chart" id="hourChart" viewBox="0 0 1000 120" preserveAspectRatio="none" role="img" aria-label="Requests per hour"></svg>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>Recent requests</h2><span class="hint" id="logHint"></span></div>
+            <div class="tablewrap">
+              <table>
+                <thead><tr><th>time</th><th>api</th><th>model</th><th>tok</th><th class="log-ms-head">ms</th><th>status</th></tr></thead>
+                <tbody id="logBody"><tr><td colspan="6" class="faint">no requests yet</td></tr></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="tabpanel" id="tab-models" role="tabpanel" hidden>
+        <section class="panel">
+          <div class="panel-head"><h2>Vibe model catalog</h2><span class="hint" id="modelsHint"></span></div>
+          <div id="modelList"></div>
+        </section>
+      </section>
+
+      <section class="tabpanel" id="tab-keys" role="tabpanel" hidden>
+        <section class="panel">
+          <div class="panel-head"><h2>API keys</h2><span class="hint" id="keysHint"></span></div>
+          <div id="keyList"></div>
+          <div class="row" style="margin-top:14px">
+            <input id="newKey" placeholder="mstrl_…" style="flex:1;min-width:200px" autocomplete="off">
+            <button class="primary" id="addKey">Add key</button>
+          </div>
+          <p class="faint" style="font-size:12px;margin-top:10px">
+            Get a Vibe-scoped key at
+            <a href="https://chat.mistral.ai/code/extensions" target="_blank" rel="noopener">chat.mistral.ai/code/extensions</a>
+            → <em>Advanced</em> on the Vibe CLI card → <em>Vibe API Key</em>.
+            A regular console.mistral.ai key bills the $30 API budget instead.</p>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h2>Proxy API keys</h2><span class="hint" id="proxyModeHint"></span></div>
+          <p class="faint" style="font-size:12.5px;margin:0 0 12px">
+            What callers send as <code>Authorization: Bearer …</code>. Required in
+            <strong>server mode</strong> (this proxy holds its own Vibe key). In
+            passthrough mode there are none — callers send their own
+            <code>mstrl_…</code>.
+          </p>
+          <div id="proxyKeyList"></div>
+          <div class="row" style="margin-top:14px">
+            <input id="proxyKeyName" placeholder="name (optional, e.g. laptop)" style="flex:1;min-width:180px" autocomplete="off">
+            <button class="primary" id="addProxyKey">Generate key</button>
+          </div>
+          <!-- The plaintext is shown once, here, and never again: the store keeps
+               only a hash. -->
+          <div id="proxyKeyNew" hidden style="margin-top:14px;padding:12px;border-radius:10px;
+               background:var(--accent-soft);border:1px solid var(--accent-border)">
+            <div style="font-size:12px;color:var(--muted);margin-bottom:6px">
+              Copy this now — it will not be shown again.
+            </div>
+            <code id="proxyKeyValue" style="word-break:break-all;font-size:13px"></code>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><h2>Rotation</h2></div>
+          <dl class="kv">
+            <dt>Strategy</dt><dd>round-robin per request</dd>
+            <dt>Cooldown</dt><dd>10 minutes on 401 / 403 / 429, then the next key is tried</dd>
+            <dt>Exhaustion</dt><dd>503 <code>no_keys</code> until a key cools back in</dd>
+          </dl>
+        </section>
+      </section>
+
+      <section class="tabpanel" id="tab-setup" role="tabpanel" hidden>
+        <!-- Shown only when no key is configured: the point is that a fresh
+             install has one obvious next step instead of an empty dashboard. -->
+        <section class="panel wizard" id="wizard" hidden>
+          <div class="panel-head">
+            <h2>Setup — no key yet</h2>
+            <span class="hint">2 minutes</span>
+          </div>
+          <div class="wiz-warn">
+            <strong>Use a Vibe-scoped key.</strong> A normal Mistral API key works
+            for requests but <strong>will not draw on the $300 Vibe allowance</strong> —
+            it bills the $30 pay-as-you-go account instead, and the quota shown here
+            will stay at zero. Only the Vibe key reports a
+            <code>vibe_budget</code>, which is what this proxy reads.
+          </div>
+          <ol class="wiz-steps">
+            <li>
+              <span class="wiz-n">1</span>
+              <div>
+                <strong>Open the Vibe console</strong>
+                <p>Go to <a href="https://console.mistral.ai/codestral/cli" target="_blank" rel="noopener">console.mistral.ai</a>
+                and sign in. This is the Vibe / Codestral-CLI page, not the main API keys page.</p>
+              </div>
+            </li>
+            <li>
+              <span class="wiz-n">2</span>
+              <div>
+                <strong>Create a key on that page</strong>
+                <p>Keys created under <span class="mono">API Keys</span> are scoped to the
+                pay-as-you-go account. The key must be issued from the <em>Vibe</em>
+                section so it carries the subscription allowance.</p>
+              </div>
+            </li>
+            <li>
+              <span class="wiz-n">3</span>
+              <div>
+                <strong>Check it is the right one</strong>
+                <p>Paste it below. This page will call
+                <span class="mono">GET /v1/billing/budget</span> with it before saving —
+                a Vibe key answers with <span class="mono">vibe_budget</span>; a normal
+                key does not, and you will be told so rather than silently getting a
+                key that never touches the allowance.</p>
+              </div>
+            </li>
+          </ol>
+          <div class="wiz-form">
+            <input id="wizKey" type="password" placeholder="mstrl_…" autocomplete="off" spellcheck="false"
+              aria-label="Mistral Vibe API key">
+            <button class="primary" id="wizSave">Verify &amp; save</button>
+          </div>
+          <p class="wiz-note faint" id="wizNote">Stored in <span class="mono">~/.mistral-vibe/keys.json</span> (mode 600), never in the repo.</p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><h2>Endpoints</h2></div>
+          <dl class="kv">
+            <dt>Base URL</dt><dd class="mono" id="setupBase">–</dd>
+            <dt>OpenAI</dt><dd class="mono">POST /v1/chat/completions</dd>
+            <dt>Anthropic</dt><dd class="mono">POST /v1/messages</dd>
+            <dt>Models</dt><dd class="mono">GET /v1/models</dd>
+            <dt>Health</dt><dd class="mono">GET /health</dd>
+            <dt>Quota</dt><dd class="mono">GET /v1/dashboard/billing/subscription</dd>
+            <dt>Usage</dt><dd class="mono">GET /v1/dashboard/billing/usage</dd>
+          </dl>
+        </section>
+        <div class="grid2" style="margin-top:14px">
+          <section class="panel">
+            <div class="panel-head"><h2>OpenAI SDK</h2><button data-copy="codeOpenAI">Copy</button></div>
+            <pre class="code" id="codeOpenAI"></pre>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>Anthropic SDK</h2><button data-copy="codeAnthropic">Copy</button></div>
+            <pre class="code" id="codeAnthropic"></pre>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>curl</h2><button data-copy="codeCurl">Copy</button></div>
+            <pre class="code" id="codeCurl"></pre>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>Deploy</h2><button data-copy="codeDeploy">Copy</button></div>
+            <pre class="code" id="codeDeploy"></pre>
+          </section>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const LS_KEY = "mv_gateway_key";
+let state = null;
+
+function apiKey() { return localStorage.getItem(LS_KEY) || ""; }
+function authHeaders() {
+  const k = apiKey();
+  return k ? { Authorization: "Bearer " + k } : {};
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 1600);
+}
+function fmtDur(s) {
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s";
+  if (s < 86400) return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+  return Math.floor(s / 86400) + "d " + Math.floor((s % 86400) / 3600) + "h";
+}
+function fmtNum(n) { return (n ?? 0).toLocaleString(); }
+
+function setPill(cls, text) { $("statusPill").className = "status " + cls; $("statusTxt").textContent = text; }
+
+
+async function load() {
+  if (document.hidden) return;
+  $("refreshBtn").disabled = true;
+  try {
+    const r = await fetch("/api/state", { headers: authHeaders() });
+    if (r.status === 403) {
+      // The session expired or was never valid: send the operator to the login
+      // screen rather than showing a misleading "offline" dashboard.
+      location.replace("/");
+      return;
+    }
+    if (r.status === 401) {
+      setPill("bad", "api key required");
+      $("noticeTxt").textContent = "This proxy requires your Vibe key. Click “Key” to enter it.";
+      $("notice").classList.add("show");
+      return;
+    }
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    state = await r.json();
+    $("notice").classList.remove("show");
+    setPill("ok", "connected");
+    $("updatedTxt").textContent = "updated " + new Date().toLocaleTimeString();
+    render();
+  } catch (e) {
+    setPill("bad", "offline");
+    $("noticeTxt").textContent = "Cannot reach /api/state: " + e.message;
+    $("notice").classList.add("show");
+  } finally {
+    $("refreshBtn").disabled = false;
+  }
+}
+
+function render() {
+  if (!state) return;
+  const b = state.budget?.vibe_budget;
+  $("uaTxt").textContent = state.user_agent;
+  if (b) {
+    const pct = b.usage_percentage ?? 0;
+    const initial = b.initial_budget ?? 300;
+    const spent = initial * pct / 100;
+    $("budgetPct").textContent = (pct < 0.01 ? pct.toFixed(4) : pct.toFixed(2)) + "%";
+    $("budgetOf").textContent = "of $" + initial.toFixed(0) + " Vibe allowance";
+    $("budgetBar").style.width = Math.min(100, Math.max(pct, pct > 0 ? 0.4 : 0)) + "%";
+    $("budgetBar").className = pct > 85 ? "bad" : pct > 60 ? "warn" : "";
+    $("budgetWhen").textContent = b.reset_at ? "resets " + new Date(b.reset_at).toLocaleDateString() : "–";
+    $("budgetSpent").textContent = "≈ $" + spent.toFixed(4) + " used";
+  } else {
+    $("budgetPct").textContent = "–";
+    $("budgetOf").textContent = "Vibe budget unavailable";
+    $("budgetWhen").textContent = "add a key to read the Vibe budget";
+    $("budgetSpent").textContent = "";
+  }
+  const ab = state.budget?.api_budget;
+  $("apiBudget").textContent = ab
+    ? "Separate free API allowance ($" + (ab.initial_budget ?? 30).toFixed(0) + "/month, " + (ab.usage_percentage ?? 0).toFixed(2) + "% used) — this proxy bills the Vibe allowance, not this one."
+    : "";
+  $("sUptime").textContent = fmtDur(state.uptime_s);
+  $("sReqs").textContent = fmtNum(state.requests.total);
+  $("sErrs").textContent = fmtNum(state.requests.errors);
+  $("sToks").textContent = fmtNum(state.requests.tokens_in) + " / " + fmtNum(state.requests.tokens_out) +
+    (state.requests.cache_hit_pct ? " · " + state.requests.cache_hit_pct + "% cached" : "");
+  $("sKeys").textContent = state.keys.list.length + (state.keys.writable ? "" : " (fixed)");
+  $("sModels").textContent = state.models.length;
+  $("sRuntime").textContent = state.keys.writable ? "bun" : "worker";
+  $("sVersion").textContent = "v" + state.version;
+  renderChart();
+  renderLog();
+  renderModels();
+  renderKeys();
+  renderSetup();
+  renderWizard();
+}
+
+function renderChart() {
+  const svg = $("hourChart");
+  if (!svg.clientWidth) return; // hidden tab; re-rendered on show/resize
+  const W = Math.max(320, Math.round(svg.clientWidth)), H = 120, now = Date.now();
+  const buckets = new Map((state.requests.buckets || []).map((x) => [x.t, x]));
+  const hours = [];
+  for (let i = 23; i >= 0; i--) {
+    const t = Math.floor(now / 3600000) * 3600000 - i * 3600000;
+    hours.push(buckets.get(t) || { t, n: 0 });
+  }
+  const max = Math.max(1, ...hours.map((h) => h.n));
+  const bw = W / 24;
+  let out = "";
+  hours.forEach((h, i) => {
+    const bh = (h.n / max) * (H - 22);
+    const hr = new Date(h.t).getHours();
+    out += `<rect x="${(i * bw + 3).toFixed(1)}" y="${(H - 14 - bh).toFixed(1)}" width="${(bw - 6).toFixed(1)}" height="${bh.toFixed(1)}" rx="3" fill="${h.n ? "var(--accent)" : "#241b1a"}"><title>${String(hr).padStart(2, "0")}:00 — ${h.n} req</title></rect>`;
+  });
+  const step = W < 520 ? 12 : 6;
+  for (let i = 0; i < 24; i += step) {
+    out += `<text x="${(i * bw + 4).toFixed(1)}" y="${H - 2}" font-size="11" fill="#7a7a86" font-family="ui-monospace,monospace">${String(new Date(now - (23 - i) * 3600000).getHours()).padStart(2, "0")}:00</text>`;
+  }
+  svg.innerHTML = out;
+  const sum = hours.reduce((a, h) => a + h.n, 0);
+  $("chartHint").textContent = sum ? sum + " req · peak " + max + "/h" : "no traffic";
+}
+
+function renderLog() {
+  const rows = state.log.slice(0, 12);
+  $("logHint").textContent = state.requests.total ? state.requests.total + " total" : "";
+  if (!rows.length) { $("logBody").innerHTML = '<tr><td colspan="6" class="faint">no requests yet</td></tr>'; return; }
+  $("logBody").innerHTML = rows.map((r) => {
+    const ok = r.status < 400;
+    return `<tr><td class="mono faint">${new Date(r.at).toLocaleTimeString()}</td>
+      <td><span class="pill ${r.api === "openai" ? "acc" : ""}">${esc(r.api)}</span></td>
+      <td class="mono">${esc(r.model)}</td><td class="mono faint">${r.tokensIn}/${r.tokensOut}</td>
+      <td class="mono faint log-ms">${r.ms}</td><td><span class="pill ${ok ? "ok" : "bad"}">${r.status}</span></td></tr>`;
+  }).join("");
+}
+
+function renderModels() {
+  $("modelsHint").textContent = state.models.length + " models";
+  $("modelList").innerHTML = state.models.map((m) =>
+    `<div class="modelrow"><span>${esc(m)}</span><button data-copymodel="${esc(m)}">Copy</button></div>`).join("");
+}
+
+function renderKeys() {
+  $("keysHint").textContent = state.keys.list.length + " configured";
+  if (!state.keys.list.length) {
+    $("keyList").innerHTML = '<p class="faint">No keys. Add one below.</p>';
+  } else {
+    const rows = state.keys.list.map((k) =>
+      `<div class="modelrow"><span>${esc(k.key)}</span>
+        <span class="row">${k.cooldown_s ? `<span class="pill bad">cooling ${k.cooldown_s}s</span>` : '<span class="pill ok">ready</span>'}
+        ${state.keys.writable ? `<button data-rmkey="${esc(k.key)}">Remove</button>` : ""}</span></div>`).join("");
+    const note = state.keys.writable ? "" :
+      '<p class="faint" style="font-size:12px;margin-top:8px">Workers store the key as a secret: <code>npx wrangler secret put VIBE_KEY</code></p>';
+    $("keyList").innerHTML = rows + note;
+  }
+  $("addKey").disabled = !state.keys.writable;
+  if (!state.keys.writable) $("keysHint").textContent = "read-only on Cloudflare";
+  renderProxyKeys();
+}
+
+function renderProxyKeys() {
+  const pk = state.proxy_keys ?? { list: [], preset: false, writable: false };
+  const mode = state.mode ?? "passthrough";
+  $("proxyModeHint").textContent = mode === "server"
+    ? (pk.list.length + (pk.preset ? 1 : 0)) + " active"
+    : "not used in passthrough mode";
+
+  if (mode !== "server") {
+    $("proxyKeyList").innerHTML =
+      '<p class="faint">This proxy holds no Vibe key, so it does not issue its own. ' +
+      'Callers send their Mistral Vibe key directly.</p>';
+    $("addProxyKey").disabled = true;
+    return;
+  }
+
+  const rows = [];
+  if (pk.preset) {
+    rows.push(`<div class="modelrow"><span>Preset <span class="faint">(PROXY_KEY)</span></span>
+      <span class="pill ok">active</span></div>`);
+  }
+  for (const k of pk.list) {
+    rows.push(`<div class="modelrow"><span><code>${esc(k.hint)}</code>
+        ${k.name ? `<span class="faint"> · ${esc(k.name)}</span>` : ""}</span>
+      <button data-rmproxykey="${esc(k.id)}">Revoke</button></div>`);
+  }
+  $("proxyKeyList").innerHTML = rows.length ? rows.join("")
+    : '<p class="faint">No proxy keys yet. Generate one below before calling the API.</p>';
+  $("addProxyKey").disabled = !pk.writable;
+  if (!pk.writable) {
+    $("proxyModeHint").textContent = "set PROXY_KEY as a secret";
+  }
+}
+
+function renderSetup() {
+  const base = location.origin;
+  $("setupBase").textContent = base;
+  $("codeOpenAI").textContent = `from openai import OpenAI\n\nclient = OpenAI(\n    base_url="${base}/v1",\n    api_key="${apiKey() || "anything"}",\n)\n\nr = client.chat.completions.create(\n    model="mistral-small-latest",\n    messages=[{"role": "user", "content": "hi"}],\n)`;
+  $("codeAnthropic").textContent = `from anthropic import Anthropic\n\nclient = Anthropic(\n    base_url="${base}",\n    api_key="${apiKey() || "anything"}",\n)\n\nr = client.messages.create(\n    model="mistral-small-latest",\n    max_tokens=256,\n    messages=[{"role": "user", "content": "hi"}],\n)`;
+  $("codeCurl").textContent = `curl ${base}/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"mistral-small-latest","messages":[{"role":"user","content":"hi"}]}'`;
+  $("codeDeploy").textContent = `# local\nbun src/server.js\n\n# cloudflare\ncd cfwork\nnpx wrangler deploy\nnpx wrangler secret put VIBE_KEY`;
+}
+
+/* ---------- wiring ---------- */
+const tabs = [...document.querySelectorAll(".tab")];
+function activate(btn) {
+  tabs.forEach((b) => { b.classList.toggle("active", b === btn); b.setAttribute("aria-selected", String(b === btn)); b.tabIndex = b === btn ? 0 : -1; });
+  document.querySelectorAll(".tabpanel").forEach((p) => { p.hidden = p.id !== "tab-" + btn.dataset.tab; });
+  if (btn.dataset.tab === "overview" && state) requestAnimationFrame(() => renderChart());
+}
+tabs.forEach((btn) => {
+  btn.onclick = () => activate(btn);
+  btn.addEventListener("keydown", (e) => {
+    const i = tabs.indexOf(btn);
+    if (e.key === "ArrowDown" || e.key === "ArrowRight") { e.preventDefault(); tabs[(i + 1) % tabs.length].focus(); activate(tabs[(i + 1) % tabs.length]); }
+    if (e.key === "ArrowUp" || e.key === "ArrowLeft") { e.preventDefault(); const j = (i - 1 + tabs.length) % tabs.length; tabs[j].focus(); activate(tabs[j]); }
+  });
+});
+
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); }
+    else {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
+    }
+    toast("copied");
+  } catch { toast("copy failed — select manually"); }
+}
+$("refreshBtn").onclick = async () => {
+  await fetch("/api/refresh", { method: "POST", headers: authHeaders() });
+  await load();
+  toast("refreshed");
+};
+$("keyBtn").onclick = () => {
+  const v = prompt("API key: your Vibe key (mstrl_…) on the Worker, empty for a local proxy:", apiKey());
+  if (v === null) return;
+  if (v) localStorage.setItem(LS_KEY, v); else localStorage.removeItem(LS_KEY);
+  load();
+};
+$("addKey").onclick = async () => {
+  const key = $("newKey").value.trim();
+  if (!key) return;
+  const r = await fetch("/api/keys", { method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify({ action: "add", key }) });
+  if (!r.ok) { const j = await r.json().catch(() => ({})); toast(j.error?.message || "add failed"); return; }
+  state = await r.json(); $("newKey").value = ""; render(); toast("key added");
+};
+/* ---------- setup wizard ---------- */
+// Only appears when nothing is configured, so a fresh install has one obvious
+// next step. Verification is server-side: a normal (non-Vibe) key must be
+// refused, because it works for chat and silently bills the wrong account.
+function renderWizard() {
+  const empty = !state || !state.keys.list.length;
+  $("wizard").hidden = !empty;
+  if (empty && !$("tab-setup").hidden) $("wizKey").focus({ preventScroll: true });
+}
+$("wizSave").onclick = async () => {
+  const key = $("wizKey").value.trim();
+  const note = $("wizNote");
+  if (!key) { note.textContent = "Paste a key first."; note.className = "wiz-note bad"; return; }
+  const btn = $("wizSave");
+  btn.disabled = true;
+  note.className = "wiz-note faint";
+  note.textContent = "Checking with Mistral…";
+  try {
+    const r = await fetch("/api/keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ action: "add", key }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      // A rejected key is the normal path for a wrong-scope key: explain it.
+      note.textContent = j?.error?.message || "that key could not be saved";
+      note.className = "wiz-note bad";
+      return;
+    }
+    state = j;
+    $("wizKey").value = "";
+    note.textContent = "Saved. Vibe budget found — the dashboard is live.";
+    note.className = "wiz-note ok";
+    render();
+    toast("key saved");
+  } finally {
+    btn.disabled = false;
+  }
+};
+$("wizKey").addEventListener("keydown", (e) => { if (e.key === "Enter") $("wizSave").click(); });
+
+document.addEventListener("click", async (e) => {
+  const t = e.target.closest("[data-copymodel],[data-copy],[data-rmkey],[data-rmproxykey]");
+  if (!t) return;
+  if (t.dataset.copymodel) await copyText(t.dataset.copymodel);
+  if (t.dataset.copy) await copyText($(t.dataset.copy).textContent);
+  if (t.dataset.rmkey) {
+    const r = await fetch("/api/keys", { method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify({ action: "remove", key: t.dataset.rmkey }) });
+    if (r.ok) { state = await r.json(); render(); toast("key removed"); }
+  }
+  if (t.dataset.rmproxykey) {
+    const r = await fetch("/api/proxy-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "revoke", id: t.dataset.rmproxykey }),
+    });
+    if (r.ok) { await load(); toast("key revoked"); }
+    else toast("revoke failed");
+  }
+});
+
+$("addProxyKey").onclick = async () => {
+  const name = $("proxyKeyName").value.trim();
+  const r = await fetch("/api/proxy-keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "create", name: name || undefined }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(j.error?.message ?? "could not create key", true); return; }
+  // Show the plaintext once; the server keeps only a hash, so this is the only
+  // moment it can be copied.
+  $("proxyKeyValue").textContent = j.key;
+  $("proxyKeyNew").hidden = false;
+  $("proxyKeyName").value = "";
+  await load();
+  await copyText(j.key);
+  toast("key created and copied");
+};
+
+$("logout").onclick = async () => {
+  await fetch("/api/logout", { method: "POST" });
+  location.replace("/");
+};
+load();
+setInterval(load, 15000);
+new ResizeObserver(() => { if (state && !$("tab-overview").hidden) renderChart(); }).observe($("hourChart"));
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+</script>
+</body>
+</html>
