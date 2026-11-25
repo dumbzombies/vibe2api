@@ -38,8 +38,10 @@ streaming and non-streaming.
   to use `/dashboard/billing/*` — `vibe-quota` and the hermes hook depend on it.
 - Installers must stay dry-run safe and idempotent, and back up every file they
   overwrite (`*.bak-vibe2api`). `test/install.test.ts` enforces both.
-- The Worker is pass-through: no `VIBE_KEY`/`GATEWAY_KEY` secrets, and the Bearer
-  token on each request is the upstream Mistral key.
+- Two deployment modes, chosen by a secret and never by code: `VIBE_KEY` set means
+  **server** mode (the deployment spends its own key, callers present an `mv-…`
+  proxy key); absent means **passthrough** (the caller's `mstrl_…` goes upstream).
+  `GATEWAY_KEY` is a legacy name kept only as a quota-script fallback.
 - GLM/deepseek models return `content` as typed-part arrays: `text` parts become
   `content`, `thinking` parts become `reasoning_content` (stream and non-stream).
 - `reasoning_effort` is clamped per model in `src/core.js` (`REASONING_EFFORTS`)
