@@ -1,8 +1,19 @@
 // Runs the *built* Cloudflare Worker bundle (wrangler dry-run output) against a
 // mock upstream, proving the deployed code path (no Bun APIs) works.
-import { test, expect, afterAll, beforeEach } from "bun:test";
-import { readFileSync, readdirSync } from "node:fs";
-import worker from "../.wbuild/worker.js";
+//
+// The bundle is generated, so a bare `bun test` on a fresh clone has nothing to
+// import. Skipping is deliberate: silently testing nothing, or crashing the
+// whole run, would both hide the real instruction (`npm run test:all`).
+import { test, expect, afterAll } from "bun:test";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+
+const BUNDLE = new URL("../.wbuild/worker.js", import.meta.url);
+const built = existsSync(BUNDLE);
+if (!built) console.warn("test/worker.test.ts: .wbuild/worker.js missing — run `npm run test:all`");
+// Dynamic import is required: the artifact may not exist, and a static import
+// of a missing file aborts the whole suite before a skip can be applied.
+const worker = built ? (await import("../.wbuild/worker.js")).default : null;
+const it = built ? test : test.skip;
 
 const seen = [];
 const mock = Bun.serve({
@@ -98,7 +109,7 @@ const uiAssets = () => {
 
 // --- Dashboard password is mandatory ---------------------------------------
 
-test("worker: dashboard is not served without a password", async () => {
+it("worker: dashboard is not served without a password", async () => {
   const assets = uiAssets();
   expect(assets.length).toBeGreaterThan(0);
   const { html } = assets[0];
@@ -110,7 +121,7 @@ test("worker: dashboard is not served without a password", async () => {
   expect(body).not.toContain("/api/state");
 });
 
-test("worker: wrong password is rejected, right password sets a session", async () => {
+it("worker: wrong password is rejected, right password sets a session", async () => {
   const bad = await post("/api/login", { password: "nope" });
   expect(bad.status).toBe(401);
   expect(bad.headers.get("set-cookie")).toBeNull();
@@ -121,7 +132,7 @@ test("worker: wrong password is rejected, right password sets a session", async 
   expect(cookie).toContain("SameSite=Lax");
 });
 
-test("worker: a valid session unlocks the dashboard", async () => {
+it("worker: a valid session unlocks the dashboard", async () => {
   const cookie = await login();
   const { html } = uiAssets()[0];
   const r = await worker.fetch(new Request(url("/"), withSession(cookie)), { ...env, UI_HTML: html }, {});
@@ -129,7 +140,7 @@ test("worker: a valid session unlocks the dashboard", async () => {
   expect(await r.text()).toContain("/api/state");
 });
 
-test("worker: /api/* needs a session even with a valid proxy key", async () => {
+it("worker: /api/* needs a session even with a valid proxy key", async () => {
   // Spend and key metadata must not leak to an API caller.
   const r = await call("/api/state", { headers: { Authorization: "Bearer pk_test" } });
   expect(r.status).toBe(403);
@@ -138,7 +149,7 @@ test("worker: /api/* needs a session even with a valid proxy key", async () => {
 
 // --- Two deployment modes ---------------------------------------------------
 
-test("worker: server mode requires a proxy key", async () => {
+it("worker: server mode requires a proxy key", async () => {
   const missing = await post("/v1/chat/completions", { model: "m-a", messages: [] });
   expect(missing.status).toBe(401);
   expect((await missing.json()).error.message).toContain("missing proxy key");
@@ -148,7 +159,7 @@ test("worker: server mode requires a proxy key", async () => {
   expect((await wrong.json()).error.message).toContain("invalid proxy key");
 });
 
-test("worker: server mode accepts PROXY_KEY and never forwards it upstream", async () => {
+it("worker: server mode accepts PROXY_KEY and never forwards it upstream", async () => {
   const r = await post("/v1/chat/completions", { model: "m-a", messages: [] }, env, { Authorization: "Bearer pk_test" });
   expect(r.status).toBe(200);
   expect((await r.json()).choices[0].message.content).toBe("worker-ok");
@@ -157,7 +168,7 @@ test("worker: server mode accepts PROXY_KEY and never forwards it upstream", asy
   expect(seen.at(-1).ua).toMatch(/Mistral-Vibe/);
 });
 
-test("worker: server mode ignores a caller-supplied Vibe key", async () => {
+it("worker: server mode ignores a caller-supplied Vibe key", async () => {
   // If a caller's own mstrl_ key were accepted here, the deployment's allowance
   // would be open to anyone who found the URL.
   const r = await post("/v1/chat/completions", { model: "m-a", messages: [] }, env, { Authorization: "Bearer mstrl_caller" });
@@ -165,7 +176,7 @@ test("worker: server mode ignores a caller-supplied Vibe key", async () => {
   expect(seen.length).toBeGreaterThan(0);
 });
 
-test("worker: passthrough mode needs no proxy key and forwards the caller's", async () => {
+it("worker: passthrough mode needs no proxy key and forwards the caller's", async () => {
   const bare = { ...env, VIBE_KEY: undefined };
   const noKey = await post("/v1/chat/completions", { model: "m-a", messages: [] }, bare);
   expect(noKey.status).toBe(401);
@@ -176,7 +187,7 @@ test("worker: passthrough mode needs no proxy key and forwards the caller's", as
   expect(seen.at(-1).auth).toBe("Bearer mstrl_caller");
 });
 
-test("worker: /health advertises the mode and whether a password is set", async () => {
+it("worker: /health advertises the mode and whether a password is set", async () => {
   const server = await (await call("/health")).json();
   expect(server.mode).toBe("server");
   expect(server.password_set).toBe(true);
@@ -189,7 +200,7 @@ test("worker: /health advertises the mode and whether a password is set", async 
 
 // --- Minted proxy keys -----------------------------------------------------
 
-test("worker: a minted proxy key authenticates, and only its hint is stored", async () => {
+it("worker: a minted proxy key authenticates, and only its hint is stored", async () => {
   const cookie = await login();
   const made = await post("/api/proxy-keys", { action: "create", name: "laptop" }, env, { Cookie: cookie });
   expect(made.status).toBe(200);
@@ -208,7 +219,7 @@ test("worker: a minted proxy key authenticates, and only its hint is stored", as
   expect(JSON.stringify(state)).not.toContain(key);
 });
 
-test("worker: revoking a minted key stops it working", async () => {
+it("worker: revoking a minted key stops it working", async () => {
   const cookie = await login();
   const { key, entry } = await (await post("/api/proxy-keys", { action: "create" }, env, { Cookie: cookie })).json();
   expect((await post("/v1/chat/completions", { model: "m-a", messages: [] }, env, { Authorization: `Bearer ${key}` })).status).toBe(200);
@@ -220,7 +231,7 @@ test("worker: revoking a minted key stops it working", async () => {
 
 // --- First-run password setup ---------------------------------------------
 
-test("worker: an unconfigured deploy lets the operator set a password once", async () => {
+it("worker: an unconfigured deploy lets the operator set a password once", async () => {
   const fresh = { ...env, DASHBOARD_PASSWORD: undefined, KV: fakeKV() };
   // Too short is refused rather than stored.
   expect((await post("/api/login", { password: "short" }, fresh)).status).toBe(400);
@@ -236,7 +247,7 @@ test("worker: an unconfigured deploy lets the operator set a password once", asy
 
 // --- Unchanged API behaviour ----------------------------------------------
 
-test("worker: /api/state with keys read-only", async () => {
+it("worker: /api/state with keys read-only", async () => {
   const cookie = await login();
   const r = await apiGet("/api/state", cookie);
   expect(r.status).toBe(200);
@@ -247,7 +258,7 @@ test("worker: /api/state with keys read-only", async () => {
   expect(j.budget.vibe_budget.initial_budget).toBe(300);
 });
 
-test("worker: openai non-stream", async () => {
+it("worker: openai non-stream", async () => {
   const r = await post("/v1/chat/completions", { model: "m-a", messages: [] }, env, { Authorization: "Bearer pk_test" });
   expect(r.status).toBe(200);
   expect((await r.json()).choices[0].message.content).toBe("worker-ok");
@@ -259,14 +270,14 @@ test("worker: openai non-stream", async () => {
   expect(seen.at(-1).contentType).toBe("application/json");
 });
 
-test("worker: openai stream sends Accept: text/event-stream", async () => {
+it("worker: openai stream sends Accept: text/event-stream", async () => {
   const r = await post("/v1/chat/completions", { model: "m-a", messages: [], stream: true }, env, { Authorization: "Bearer pk_test" });
   const text = await r.text();
   expect(text).toContain('"content":"wo"');
   expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
 });
 
-test("worker: anthropic stream envelope", async () => {
+it("worker: anthropic stream envelope", async () => {
   const r = await post("/v1/messages", { model: "m-a", max_tokens: 9, stream: true, messages: [{ role: "user", content: "hi" }] }, env, { Authorization: "Bearer pk_test" });
   const text = await r.text();
   expect(text).toContain("event: message_start");
@@ -278,7 +289,7 @@ test("worker: anthropic stream envelope", async () => {
 // API credential rather than a dashboard session.
 const BILL = { Authorization: "Bearer pk_test" };
 
-test("worker: billing subscription is dollar-denominated", async () => {
+it("worker: billing subscription is dollar-denominated", async () => {
   const r = await call("/v1/dashboard/billing/subscription", { headers: BILL });
   expect(r.status).toBe(200);
   const j = await r.json();
@@ -291,7 +302,7 @@ test("worker: billing subscription is dollar-denominated", async () => {
   expect(j.access_until).toBeLessThan(1e11);
 });
 
-test("worker: billing usage reports cents, and cents/100 agrees with dollars", async () => {
+it("worker: billing usage reports cents, and cents/100 agrees with dollars", async () => {
   const usage = await (await call("/v1/dashboard/billing/usage", { headers: BILL })).json();
   const sub = await (await call("/v1/dashboard/billing/subscription", { headers: BILL })).json();
   expect(usage.object).toBe("list");
@@ -300,14 +311,14 @@ test("worker: billing usage reports cents, and cents/100 agrees with dollars", a
   expect((await (await call("/dashboard/billing/usage", { headers: BILL })).json()).object).toBe("list");
 });
 
-test("worker: key writes are refused, never crash on a missing filesystem", async () => {
+it("worker: key writes are refused, never crash on a missing filesystem", async () => {
   const cookie = await login();
   const r = await post("/api/keys", { action: "add", key: "mstrl_x" }, env, { Cookie: cookie });
   expect([400, 501]).toContain(r.status);
   expect(r.headers.get("content-type")).toContain("application/json");
 });
 
-test("worker: wizard verification refuses a pay-as-you-go key", async () => {
+it("worker: wizard verification refuses a pay-as-you-go key", async () => {
   // Upstream answers with api_budget only: a real Vibe key always carries
   // vibe_budget, so this must be reported as the wrong scope, not accepted.
   const cookie = await login();
@@ -317,7 +328,7 @@ test("worker: wizard verification refuses a pay-as-you-go key", async () => {
   expect(j.vibe).not.toBe(true);
 });
 
-test("worker: starvation recovers without an explicit effort", async () => {
+it("worker: starvation recovers without an explicit effort", async () => {
   // The SDK-found bug: no reasoning_effort, tiny budget. The ladder must still
   // walk down and return text instead of an empty 200 / 502.
   const r = await post("/v1/chat/completions", {
@@ -328,7 +339,7 @@ test("worker: starvation recovers without an explicit effort", async () => {
   expect(j.choices[0].message.content).toBeTruthy();
 });
 
-test("worker: stream error surfaces as a terminal finish_reason", async () => {
+it("worker: stream error surfaces as a terminal finish_reason", async () => {
   const r = await post("/v1/chat/completions", {
     model: "m-a", max_tokens: 40, stream: true, messages: [{ role: "user", content: "hi" }],
   }, env, { Authorization: "Bearer pk_test" });
@@ -339,7 +350,7 @@ test("worker: stream error surfaces as a terminal finish_reason", async () => {
   expect(body).toContain("data: [DONE]");
 });
 
-test("worker: dashboard carries the Mistral red theme", async () => {
+it("worker: dashboard carries the Mistral red theme", async () => {
   const assets = uiAssets();
   expect(assets.length).toBeGreaterThan(0);
   for (const { name, html } of assets) {
