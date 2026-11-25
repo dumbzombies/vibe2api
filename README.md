@@ -51,7 +51,7 @@ against Mistral's own counters: one proxied call moved `vibe_budget` by
 |---|---|---|---|
 | **local proxy** | `src/server.js`, `node:http`, Bun or Node | Bun or Node 20+ | OpenAI + Anthropic SDKs, any HTTP client, a dashboard |
 | **Cloudflare Worker** | `cfwork/worker.js` importing the same core | a Cloudflare account | the same API from anywhere, no machine to keep on |
-| **omp / pi extension** | self-contained plugin, binds its own loopback server inside the agent | omp or pi | `/login` entry, `/model mistral-vibe/*`, `/vibe-quota` |
+| **omp / pi extension** | self-contained plugin, binds its own loopback server inside the agent | omp or pi | `/login` entry, `/model mistral-vibe/*`, `/vibe-usage` |
 | **opencode / hermes plugin** | same idea, different host layout | opencode or hermes | provider + `/vibe-quota` / `hermes usage` |
 
 All four share one implementation of the translation logic (`src/core.js` for
@@ -140,7 +140,7 @@ run; quitting the agent stops it.
 # restart the agent, then:
 /login          # pick "Mistral Vibe", paste your mstrl_… key (validated before storing)
 /model          # pick a mistral-vibe/* model
-/vibe-quota     # used %, $ left, reset date, cache hit rate
+/vibe-usage     # used %, $ left, reset date, cache hit rate
 ```
 
 The `/login` entry is registered through the extension's `oauth` block, the same
@@ -223,7 +223,7 @@ hint, created_at, name}`. Revoke from the Keys tab.
   granularity, measured 1.11 s → 0.85 s on a repeated 1053-token prompt). Keep
   system prompt, tool list and message order byte-identical between turns;
   `prompt_cache_key` and `metadata` are forwarded. `/api/state` and
-  `/vibe-quota` report the hit rate.
+  `/vibe-usage` report the hit rate.
 - **Billing numbers.** `usage_percentage` is already a percent (`0.56` means
   0.56%), not a fraction — do not scale it again.
 - **Stats are per process/isolate.** The 24 h chart, token totals and the
@@ -276,7 +276,7 @@ src/core.js       all shared logic: routing, auth, translation, billing (Web-sta
 src/server.js     local entry — node:http, runs on Bun and Node
 src/ui.html       dashboard (served by both the local server and the Worker)
 cfwork/           Worker entry + wrangler config
-plugins/omp/      omp/pi extension (in-process server + /login + /vibe-quota)
+plugins/omp/      omp/pi extension (in-process server + /login + /vibe-usage)
 plugins/opencode/ opencode plugin + command
 plugins/hermes/   hermes model-provider plugin
 plugins/shared/   vibe-quota.sh (proxy, then billing, then Mistral direct)

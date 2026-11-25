@@ -1252,7 +1252,7 @@ function providerModels(): ProviderModel[] {
 
 // ---------- extension ----------
 
-// Registration path, surfaced in /vibe-quota: "oauth" means the /login block
+// Registration path, surfaced in /vibe-usage: "oauth" means the /login block
 // registered (the only path this build supports).
 let providerForm: "oauth" | "unknown" = "unknown";
 
@@ -1308,8 +1308,8 @@ export default async function mistralVibe(pi: Pi): Promise<void> {
 }
 
 function registerCommand(pi: Pi): void {
-  pi.registerCommand("vibe-quota", {
-    description: "Show Mistral Vibe quota (used %, $ left, reset date, keys)",
+  pi.registerCommand("vibe-usage", {
+    description: "Show Mistral Vibe usage (used %, $ left, reset date, keys)",
     handler: async (_args: string, ctx: CommandCtx) => {
       const text = await quotaText();
       // In print mode (omp -p) a ui object exists but its notify goes nowhere;

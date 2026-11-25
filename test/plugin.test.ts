@@ -88,6 +88,7 @@ type QuotaHandler = (args: string, ctx: unknown) => unknown;
 let provider: ProviderConfig | null = null;
 let nativeProvider: any = null;
 let quotaHandler: QuotaHandler | null = null;
+let commandNames: string[] = [];
 await plugin.default({
   registerProvider: (nameOrProvider: string | object, cfg?: ProviderConfig) => {
     // Native provider object form (no cfg): carry baseUrl/models on the object
@@ -102,7 +103,10 @@ await plugin.default({
       };
     }
   },
-  registerCommand: (_name: string, cmd: { handler: QuotaHandler }) => { quotaHandler = cmd.handler; },
+  registerCommand: (name: string, cmd: { handler: QuotaHandler }) => {
+    commandNames.push(name);
+    quotaHandler = cmd.handler;
+  },
 });
 
 const base = () => provider!.baseUrl.replace(/\/v1$/, "");
@@ -115,6 +119,10 @@ const post = (body: unknown) =>
   });
 
 describe("mistral-vibe omp plugin (in-process server)", () => {
+  test("registers the usage command as /vibe-usage", () => {
+    expect(commandNames).toEqual(["vibe-usage"]);
+  });
+
   test("provider points at the loopback server with the 5 models", () => {
     expect(provider!.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
     expect(provider!.api).toBe("openai-completions");

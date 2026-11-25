@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install the Mistral Vibe provider into omp and/or pi: in-process provider +
-# `/login` entry + `/vibe-quota`.
+# `/login` entry + `/vibe-usage`.
 #
 #   ./install.sh                 # every agent dir that exists
 #   ./install.sh --omp           # only ~/.omp/agent
@@ -78,7 +78,7 @@ cat <<'EOF'
     restart the agent, then:
       /login          pick "Mistral Vibe" and paste your mstrl_… key
       /model          pick a mistral-vibe/* model
-      /vibe-quota     used %, $ left, reset date, cache hit rate
+      /vibe-usage     used %, $ left, reset date, cache hit rate
     The provider runs its own loopback server inside the agent (port 8790+):
     nothing else needs to be running.
 EOF

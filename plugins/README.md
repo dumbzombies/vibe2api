@@ -5,7 +5,7 @@ $300/month Vibe allowance instead of the $30 API budget.
 
 | plugin | target | self-contained? | gives you |
 |---|---|---|---|
-| `omp/` | omp **and** pi | yes — binds a loopback server inside the agent | provider, `/login` entry, `/vibe-quota` |
+| `omp/` | omp **and** pi | yes — binds a loopback server inside the agent | provider, `/login` entry, `/vibe-usage` |
 | `opencode/` | opencode | yes — binds `127.0.0.1:8796` on load | provider block, `/vibe-quota` command |
 | `hermes/` | hermes | no — talks to the proxy/Worker | provider, `hermes usage` gauge |
 | `shared/` | anything | — | `vibe-quota` script |
