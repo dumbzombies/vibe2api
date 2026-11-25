@@ -4,17 +4,26 @@
 
 Mistral bills the same models twice against two different pots: the ordinary API
 key draws on a $30/month API budget, while the Vibe coding agent draws on a
-$300/month Vibe allowance. The only difference on the wire is the `User-Agent`:
+$300/month Vibe allowance. Two things on the wire route spend to the Vibe pot:
 
 ```
 user-agent: mistral-client-python/Mistral-Vibe/3.1.5
+…
+{"metadata": {"call_source": "vibe_code"}}
 ```
 
-vibe2api puts that header in front of `api.mistral.ai`, so anything you point at
+The `User-Agent` was the only signal until 2026-11-24; on 2026-11-25 Mistral
+stopped honouring it alone and now keys attribution on a non-empty
+`metadata.call_source` (the value is not inspected — Vibe 3.x sends
+`"vibe_code"`). vibe2api sends both. Mistral's announcement (effective
+2026-12-01) says usage through third-party harnesses counts against the API
+allowance; this metadata is what the endpoint actually does today.
+
+vibe2api puts both in front of `api.mistral.ai`, so anything you point at
 it — the OpenAI SDK, the Anthropic SDK, omp, opencode, hermes, Claude Code style
 tooling — spends the allowance instead of the small budget. Verified end to end
 against Mistral's own counters: one proxied call moved `vibe_budget` by
-+0.000483% and `api_budget` by 0.000000%.
++0.000024% and `api_budget` by 0.000000%.
 
 ```
              ┌───────────────┐  UA: mistral-client-python/Mistral-Vibe/3.1.5
@@ -266,8 +275,8 @@ port conflicts, crash logging), and the installers against scratch directories.
 <https://chat.mistral.ai/code/extensions> → expand **Advanced** on the Vibe CLI
 card → copy the **Vibe API Key** (`mstrl_…`). A key from
 `console.mistral.ai → API Keys` draws on the $30 budget instead, *even with the
-Vibe User-Agent* — it will work and report no `vibe_budget`. The dashboard's
-setup wizard checks for exactly that.
+Vibe User-Agent and billing metadata* — it will work and report no `vibe_budget`.
+The dashboard's setup wizard checks for exactly that.
 
 ## Layout
 
@@ -287,5 +296,7 @@ test/             bun test suites + the Python SDK e2e script
 ## Licence
 
 MIT. Not affiliated with Mistral AI. It relies on the Vibe client's User-Agent
-being the billing signal, which is Mistral's implementation detail and may
-change.
+and `metadata.call_source` being the billing signal, which is Mistral's
+implementation detail and may change (it did: UA alone stopped routing on
+2026-11-25, and Mistral's 2026-12-01 policy drops Vibe allowance for third-party
+harnesses entirely).

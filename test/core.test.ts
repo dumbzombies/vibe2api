@@ -221,8 +221,32 @@ describe("wire protocol", () => {
     expect(body.max_tokens).toBe(64);
     // Measured as accepted upstream — forwarding them costs nothing and
     // prompt_cache_key can pin cache affinity, so they pass through.
-    expect(body.metadata).toEqual({ a: 1 });
+    // `call_source` is the billing-attribution signal (see src/core.js), so the
+    // caller's metadata is merged, never replaced or dropped.
+    expect(body.metadata).toEqual({ a: 1, call_source: "vibe_code" });
     expect(body.prompt_cache_key).toBe("session-1");
+  });
+
+  test("metadata.call_source is what routes spend to the Vibe allowance", async () => {
+    // UA alone no longer routes (measured 2026-11-25): it lives in
+    // upstreamHeaders and every request here carries it, yet the server gates
+    // attribution on this metadata key. Assert it on requests that send no
+    // metadata at all, and on the Anthropic path, which shares the body builder.
+    await post("/v1/chat/completions", { model: "m", messages: [] });
+    expect(seen.at(-1).body.metadata).toEqual({ call_source: "vibe_code" });
+    expect(seen.at(-1).ua).toMatch(/^mistral-client-python\/Mistral-Vibe\//);
+
+    await post("/v1/messages", {
+      model: "m", max_tokens: 10, messages: [{ role: "user", content: "hi" }],
+    });
+    expect(seen.at(-1).body.metadata).toEqual({ call_source: "vibe_code" });
+  });
+
+  test("non-object metadata is replaced rather than forwarded", async () => {
+    // Mistral 422s on a non-string metadata; a string from a lenient client
+    // must not turn every request into a failure.
+    await post("/v1/chat/completions", { model: "m", messages: [], metadata: "abc" });
+    expect(seen.at(-1).body.metadata).toEqual({ call_source: "vibe_code" });
   });
 
   test("Anthropic non-stream: system/max_tokens converted, response shape", async () => {

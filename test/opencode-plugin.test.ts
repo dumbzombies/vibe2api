@@ -77,6 +77,8 @@ describe("opencode mistral-vibe plugin", () => {
     expect(sent.body.reasoning_effort).toBe("high");
     expect(sent.body.max_tokens).toBe(50);
     expect(sent.body.store).toBeUndefined();
+    // What routes spend to the Vibe allowance (UA alone stopped working 2026-11-25).
+    expect(sent.body.metadata).toEqual({ call_source: "vibe_code" });
   });
 
   test("stream is ASCII-only with split finish chunk", async () => {

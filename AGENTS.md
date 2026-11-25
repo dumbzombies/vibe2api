@@ -2,8 +2,9 @@
 
 Public repo: `dumbzombies/vibe2api`.
 
-Proxy to `api.mistral.ai` that sends the Vibe User-Agent
-(`mistral-client-python/Mistral-Vibe/<version>`) so usage counts against the
+Proxy to `api.mistral.ai` that sends the Vibe client `User-Agent`
+(`mistral-client-python/Mistral-Vibe/<version>`) and a
+`metadata.call_source: "vibe_code"` on every request, so usage counts against the
 $300/month Vibe allowance instead of the $30 API allowance. Exposes both
 OpenAI (`/v1/chat/completions`) and Anthropic (`/v1/messages`) endpoints,
 streaming and non-streaming.

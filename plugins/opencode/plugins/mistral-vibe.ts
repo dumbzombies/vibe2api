@@ -117,6 +117,10 @@ const OPENAI_REJECTED = ["store", "service_tier", "safety_identifier"];
 function normalizeBody(body0: Rec): Rec {
   const out: Rec = { ...body0 };
   for (const field of OPENAI_REJECTED) delete out[field];
+  // Billing attribution: the Vibe UA alone stopped routing spend on 2026-11-25;
+  // upstream now keys on a non-empty `metadata.call_source` (value not checked).
+  const meta = rec(out.metadata) ?? {};
+  out.metadata = { ...meta, call_source: "vibe_code" };
   if (out.max_completion_tokens !== undefined) {
     out.max_tokens ??= out.max_completion_tokens;
     delete out.max_completion_tokens;

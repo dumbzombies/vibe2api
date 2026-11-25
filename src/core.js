@@ -505,9 +505,21 @@ async function* sseEvents(body) {
 // endpoint, so they pass through (`prompt_cache_key` helps cache affinity).
 const OPENAI_REJECTED = ['store', 'service_tier', 'safety_identifier'];
 
+// Billing attribution. Until 2026-11-24 the Vibe User-Agent alone routed spend
+// to the $300 Vibe allowance. On 2026-11-25 that stopped: UA-only calls debit
+// `api_budget` (measured, both UAs), while any non-empty `metadata.call_source`
+// string routes to `vibe_budget` — the value is not inspected (tried
+// `vibe_code`, `not_vibe`, `VIBE_CODE`). Other metadata keys, an empty
+// `metadata`, or `call_source: ""` (422) do not. Vibe 3.x sends the same
+// `call_source: "vibe_code"` in its telemetry, which is where this comes from.
+// The UA is still sent: it costs nothing and remains the Vibe client identity.
+const BILLING_CALL_SOURCE = 'vibe_code';
+
 function normalizeOpenAIBody(body) {
   const out = { ...body };
   for (const field of OPENAI_REJECTED) delete out[field];
+  const meta = out.metadata && typeof out.metadata === 'object' && !Array.isArray(out.metadata) ? out.metadata : {};
+  out.metadata = { ...meta, call_source: BILLING_CALL_SOURCE };
   if (out.max_completion_tokens !== undefined) {
     out.max_tokens ??= out.max_completion_tokens;
     delete out.max_completion_tokens;
@@ -1005,7 +1017,10 @@ function anthropicError(message, status, type, requestId) {
 }
 
 async function handleAnthropic(ab, env, requestId) {
-  const body = anthropicToOpenAIBody(ab);
+  // Same normalization as the OpenAI path: it adds the billing `metadata`
+  // (without it every Anthropic call debits the $30 API allowance) and the
+  // greedy-sampling top_p fix.
+  const body = normalizeOpenAIBody(anthropicToOpenAIBody(ab));
   const stream = ab.stream === true;
   const t0 = Date.now();
   const model = ab.model;

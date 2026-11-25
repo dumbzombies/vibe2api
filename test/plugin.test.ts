@@ -163,6 +163,8 @@ describe("mistral-vibe omp plugin (in-process server)", () => {
     expect(sent.body.reasoning_effort).toBe("low");
     expect(sent.body.max_tokens).toBe(100); // max_completion_tokens aliased
     expect(sent.body.store).toBeUndefined(); // rejected field stripped
+    // What routes spend to the Vibe allowance (UA alone stopped working 2026-11-25).
+    expect(sent.body.metadata).toEqual({ call_source: "vibe_code" });
     const messages = sent.body.messages as { reasoning_content?: string }[];
     expect(messages[1].reasoning_content).toBeUndefined(); // stripped from replay
   });
