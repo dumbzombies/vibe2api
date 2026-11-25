@@ -11,3 +11,7 @@ keys.json
 
 # Local session memory bank (deployment-specific, never published)
 .agents/
+
+# Python bytecode from syntax checks
+__pycache__/
+*.pyc
