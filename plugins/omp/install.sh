@@ -18,7 +18,8 @@ for a in "$@"; do
   case "$a" in
     --omp) want_pi=0; explicit=1 ;;
     --pi) want_omp=0; explicit=1 ;;
-    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --dry-run) VIBE2API_DRY_RUN=1; export VIBE2API_DRY_RUN ;;
+    -h|--help) awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"; exit 0 ;;
     *) die "unknown option: $a" ;;
   esac
 done

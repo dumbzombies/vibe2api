@@ -21,7 +21,7 @@ target=""
 forward=()
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"; exit 0 ;;
     --dry-run) dry=1 ;;
     *)
       if [ -z "$target" ] && [ "${a#-}" = "$a" ]; then target="$a"; else forward+=("$a"); fi

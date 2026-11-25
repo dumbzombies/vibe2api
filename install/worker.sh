@@ -22,8 +22,9 @@ while [ $# -gt 0 ]; do
     --password) password="${2:?password}"; shift 2 ;;
     --name) name="${2:?name}"; shift 2 ;;
     --kv) do_kv=1; shift ;;
+    --dry-run) VIBE2API_DRY_RUN=1; export VIBE2API_DRY_RUN; shift ;;
     --build-only|--dry-run) do_deploy=0; shift ;;
-    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done

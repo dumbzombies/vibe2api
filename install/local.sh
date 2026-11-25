@@ -20,7 +20,8 @@ while [ $# -gt 0 ]; do
     --key) key="${2:?key}"; shift 2 ;;
     --port) port="${2:?port}"; shift 2 ;;
     --bind) bind="${2:?bind}"; shift 2 ;;
-    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --dry-run) VIBE2API_DRY_RUN=1; export VIBE2API_DRY_RUN; shift ;;
+    -h|--help) awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done

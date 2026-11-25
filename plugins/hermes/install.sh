@@ -17,7 +17,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --remote) remote="${2:?host}"; shift 2 ;;
     --key) key="${2:?key}"; shift 2 ;;
-    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --dry-run) VIBE2API_DRY_RUN=1; export VIBE2API_DRY_RUN; shift ;;
+    -h|--help) awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done

@@ -13,6 +13,13 @@ here="$(cd "$(dirname "$0")" && pwd)"
 
 cfg="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
 bin="${VIBE2API_BIN:-${VIBE_QUOTA_BIN:-$HOME/.local/bin}}"
+for a in "$@"; do
+  case "$a" in
+    -h|--help) awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"; exit 0 ;;
+    --dry-run) VIBE2API_DRY_RUN=1; export VIBE2API_DRY_RUN ;;
+    *) die "unknown option: $a" ;;
+  esac
+done
 [ -d "$cfg" ] || die "opencode config dir not found: $cfg"
 
 step "plugin -> $cfg/plugins"
