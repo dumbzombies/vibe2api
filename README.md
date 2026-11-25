@@ -167,7 +167,6 @@ proxy by default; set `MISTRAL_VIBE_BASE_URL=https://…/v1` for a Worker.
 | POST | `/v1/chat/completions` | API | OpenAI chat completions, stream and non-stream |
 | POST | `/v1/messages` | API | Anthropic messages, stream and non-stream |
 | GET | `/v1/models` | API | model catalog with context limits and capabilities |
-| GET | `/v1/billing/budget` | API | raw Mistral budget (both pots) |
 | GET | `/dashboard/billing/subscription` · `/v1/dashboard/billing/subscription` | API | one-api/NewAPI/LiteLLM-compatible quota (dollars) |
 | GET | `/dashboard/billing/usage` · `/v1/dashboard/billing/usage` | API | same, `total_usage` in **cents**, plus `used_percent` |
 | GET | `/health` | none | mode, UA, keys configured, password set |
@@ -253,11 +252,11 @@ hint, created_at, name}`. Revoke from the Keys tab.
 
 ```bash
 npm run test:all        # wipes .wbuild, rebuilds the Worker bundle, runs everything
-bun test                # the suite against the current bundle
+bun test                # skips the 23 Worker-bundle tests when .wbuild/ is absent
 python3 test/sdk_e2e.py # official openai + anthropic SDKs against a live server
 ```
 
-133 tests: the shared core against a mock upstream, the *built* Worker bundle
+140 tests: the shared core against a mock upstream, the *built* Worker bundle
 (so the deployed code path is what runs, not a source copy), both plugin
 implementations, the real `src/server.js` as a child process (aborted streams,
 port conflicts, crash logging), and the installers against scratch directories.
