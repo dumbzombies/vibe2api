@@ -558,8 +558,8 @@ describe("bug hunt: streaming and retry", () => {
       const t = await (await post({ model: "stream-ignored", messages: [], stream: true })).text();
       expect(t).toContain("THE ACTUAL ANSWER");
       expect(t.trim().endsWith("data: [DONE]")).toBe(true);
-      const events = t.split("\n").filter((l) => l.startsWith("data: ") && !l.includes("[DONE]")).map((l) => JSON.parse(l.slice(6)));
-      expect(events.some((e: any) => e.choices?.[0]?.finish_reason === "stop")).toBe(true);
+      const events = t.split("\n").filter((l) => l.startsWith("data: ") && !l.includes("[DONE]")).map((l) => JSON.parse(l.slice(6)) as StreamEvent);
+      expect(events.some((e) => e.choices?.[0]?.finish_reason === "stop")).toBe(true);
     } finally {
       globalThis.fetch = prevFetch;
     }
@@ -610,8 +610,8 @@ describe("bug hunt: silent stream truncation", () => {
   const delta = (content: string) =>
     `data: ${JSON.stringify({ id: "m", choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`;
   const parse = (raw: string) =>
-    raw.split("\n").filter((l) => l.startsWith("data: ") && !l.includes("[DONE]")).map((l) => JSON.parse(l.slice(6)));
-  const errorEvent = (raw: string) => parse(raw).find((e: any) => e.error) as any;
+    raw.split("\n").filter((l) => l.startsWith("data: ") && !l.includes("[DONE]")).map((l) => JSON.parse(l.slice(6)) as StreamEvent);
+  const errorEvent = (raw: string) => parse(raw).find((e) => e.error) as any;
 
   test("an upstream that closes without finish_reason reports an incomplete stream", async () => {
     const raw = await withStream(() =>
@@ -629,7 +629,7 @@ describe("bug hunt: silent stream truncation", () => {
     expect(raw).toContain("part one");
     // omp's SDK drops chunks without `choices`, so the failure must ride on an
     // unknown finish_reason: mapStopReason throws `Provider finish_reason: <x>`.
-    const finish = parse(raw).find((e: any) => e.choices?.[0]?.finish_reason === "incomplete_reasoning");
+    const finish = parse(raw).find((e) => e.choices?.[0]?.finish_reason === "incomplete_reasoning");
     expect(finish).toBeDefined();
     expect(errorEvent(raw).error.code).toBe("incomplete_stream");
   });
@@ -647,7 +647,7 @@ describe("bug hunt: silent stream truncation", () => {
       ),
     );
     expect(raw).toContain("partial text");
-    expect(parse(raw).some((e: any) => e.choices?.[0]?.finish_reason === "incomplete_reasoning")).toBe(true);
+    expect(parse(raw).some((e) => e.choices?.[0]?.finish_reason === "incomplete_reasoning")).toBe(true);
   });
 
   test("a normal completed stream carries no error event", async () => {
@@ -744,7 +744,7 @@ describe("budget exhausted by reasoning", () => {
   };
   const errors = (raw: string) =>
     raw.split("\n").filter((l) => l.startsWith("data: ") && !l.includes("[DONE]"))
-      .map((l) => JSON.parse(l.slice(6))).filter((e: any) => e.error);
+      .map((l) => JSON.parse(l.slice(6))).filter((e) => e.error);
 
   test("length with no visible text is reported as reasoning starvation", async () => {
     const raw = await withUpstream([
@@ -755,8 +755,8 @@ describe("budget exhausted by reasoning", () => {
     const errs = errors(raw);
     expect(errs.length).toBe(1);
     expect(errs[0].error.message).toContain("max_tokens on reasoning");
-    const all = raw.split("\n").filter((l) => l.startsWith("data: ") && !l.includes("[DONE]")).map((l) => JSON.parse(l.slice(6)));
-    expect(all.some((e: any) => e.choices?.[0]?.finish_reason === "incomplete_reasoning")).toBe(true);
+    const all = raw.split("\n").filter((l) => l.startsWith("data: ") && !l.includes("[DONE]")).map((l) => JSON.parse(l.slice(6)) as StreamEvent);
+    expect(all.some((e) => e.choices?.[0]?.finish_reason === "incomplete_reasoning")).toBe(true);
   });
 
   test("length with visible text is left alone (normal truncation)", async () => {
@@ -864,9 +864,9 @@ describe("reasoning starvation: silent recovery", () => {
     }
   };
   const parse = (raw: string) =>
-    raw.split("\n").filter((l) => l.startsWith("data: ") && !l.includes("[DONE]")).map((l) => JSON.parse(l.slice(6)));
+    raw.split("\n").filter((l) => l.startsWith("data: ") && !l.includes("[DONE]")).map((l) => JSON.parse(l.slice(6)) as StreamEvent);
   const textOf = (raw: string) =>
-    parse(raw).map((e: any) => (typeof e.choices?.[0]?.delta?.content === "string" ? e.choices[0].delta.content : "")).join("");
+    parse(raw).map((e) => (typeof e.choices?.[0]?.delta?.content === "string" ? e.choices[0].delta.content : "")).join("");
 
   test("a starved turn retries once at low effort and returns its answer", async () => {
     const { efforts, raw } = await drive((effort) =>
@@ -880,8 +880,8 @@ describe("reasoning starvation: silent recovery", () => {
     expect(efforts).toEqual(["high", "low"]);
     expect(textOf(raw)).toBe("RECOVERED");
     // One finish only: the starved attempt's finish chunk is never forwarded.
-    expect(parse(raw).filter((e: any) => e.choices?.[0]?.finish_reason)).toHaveLength(1);
-    expect(parse(raw).some((e: any) => e.error)).toBe(false);
+    expect(parse(raw).filter((e) => e.choices?.[0]?.finish_reason)).toHaveLength(1);
+    expect(parse(raw).some((e) => e.error)).toBe(false);
   });
 
   test("the first attempt is not re-sent upstream (no double billing)", async () => {
@@ -901,13 +901,13 @@ describe("reasoning starvation: silent recovery", () => {
     expect(efforts).toEqual(["high"]);
     expect(textOf(raw)).toBe("cut off here");
     // omp renders "reached the maximum output token limit" on this reason.
-    expect(parse(raw).some((e: any) => e.choices?.[0]?.finish_reason === "length")).toBe(true);
+    expect(parse(raw).some((e) => e.choices?.[0]?.finish_reason === "length")).toBe(true);
   });
 
   test("starvation again at low is reported, not retried forever", async () => {
     const { efforts, raw } = await drive(() => starved);
     expect(efforts).toEqual(["high", "low"]);
-    expect(parse(raw).some((e: any) => e.choices?.[0]?.finish_reason === "incomplete_reasoning")).toBe(true);
+    expect(parse(raw).some((e) => e.choices?.[0]?.finish_reason === "incomplete_reasoning")).toBe(true);
   });
 });
 
@@ -1025,6 +1025,219 @@ describe("recovery ladder: per-model and bounded", () => {
       expect(calls).toBe(1); // no retry: text was already delivered
       expect(raw).toContain("partial text");
       expect(raw).toContain("incomplete_reasoning");
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+});
+
+describe("tool calls are never duplicated or delivered truncated", () => {
+  // Parsed SSE payloads, narrowed to the fields these assertions read.
+  type StreamEvent = {
+    choices?: {
+      finish_reason?: string | null;
+      delta?: {
+        content?: string;
+        tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[];
+      };
+    }[];
+    error?: { message?: string };
+  };
+
+  // Two independent defects with one cause: the proxy only counted *text* as
+  // output the client had seen, and only inspected `finish_reason: "length"`.
+  //  1. A tool-call delta carries no text, so a reset after one had been written
+  //     still looked "invisible" and was retried. OpenAI clients merge deltas by
+  //     index, so the retry's arguments were concatenated onto the first call's:
+  //     `{"path":"first.js"{"path":"second.js"}` — unparseable.
+  //  2. A tool call cut off by the output budget ends with
+  //     `finish_reason:"tool_calls"`, not `"length"`, so truncation went
+  //     unreported and the agent got arguments ending mid-string.
+  const enc = new TextEncoder();
+  const stream = (events: unknown[], then?: (c: ReadableStreamDefaultController<Uint8Array>) => void) =>
+    new Response(
+      new ReadableStream({
+        start(c) {
+          for (const e of events) c.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`));
+          if (then) then(c);
+          else c.close();
+        },
+      }),
+      { headers: { "Content-Type": "text/event-stream" } },
+    );
+  const callDelta = (id: string, path: string) => ({
+    id: "m",
+    choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id, type: "function", function: { name: "write_file", arguments: `{"path":"${path}"` } }] }, finish_reason: null }],
+  });
+  const finish = (reason: string, usage: unknown = { prompt_tokens: 5, completion_tokens: 9 }) => ({
+    id: "m",
+    choices: [{ index: 0, delta: {}, finish_reason: reason }],
+    usage,
+  });
+  const drive = async (respond: () => Response) => {
+    const calls: string[] = [];
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (!url.startsWith(process.env.MISTRAL_BASE!)) return prevFetch(input, init);
+      calls.push(JSON.parse(init.body).reasoning_effort);
+      return respond();
+    }) as typeof fetch;
+    try {
+      const raw = await (await post({ model: "zai-glm-5-3-flash", messages: [], stream: true, reasoning_effort: "high", max_tokens: 16384 })).text();
+      const events: StreamEvent[] = raw
+        .split("\n")
+        .filter((l) => l.startsWith("data: ") && !l.includes("[DONE]"))
+        .map((l) => JSON.parse(l.slice(6)) as StreamEvent);
+      return { calls, raw, events };
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  };
+
+  test("a reset after a tool-call delta is reported, never retried", async () => {
+    const { calls, events } = await drive(() =>
+      stream([callDelta("call_A", "first.js")], (c) => setTimeout(() => c.error(new Error("socket hang up")), 10)),
+    );
+    // One attempt only: the client has already received `call_A`.
+    expect(calls).toEqual(["high"]);
+    expect(events.some((e) => e.choices?.[0]?.finish_reason === "incomplete_reasoning")).toBe(true);
+    const toolDeltas = events.flatMap((e) => e.choices?.[0]?.delta?.tool_calls ?? []);
+    // The one call the model did emit reaches the client once, and no second
+    // call is appended at the same index (that is what corrupted the JSON).
+    expect(toolDeltas).toHaveLength(1);
+    expect(toolDeltas[0].id).toBe("call_A");
+  });
+
+  test("a truncated tool call is reported instead of forwarded", async () => {
+    // `finish_reason` is "tool_calls" — the shape measured on the live endpoint
+    // when a large write_file call hits the output budget — with arguments that
+    // end mid-string. `usage` is pinned at the cap to match that measurement.
+    const { calls, events, raw } = await drive(() =>
+      stream([
+        callDelta("call_T", "big.js"),
+        { id: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'function f(){ ret' } }] }, finish_reason: null }] },
+        finish("tool_calls", { prompt_tokens: 197, completion_tokens: 16384 }),
+      ]),
+    );
+    expect(calls).toEqual(["high"]); // truncation is not an effort problem
+    // Argument deltas stream live, so the partial call is visible — but no
+    // usable finish is ever sent. omp turns `incomplete_reasoning` into a
+    // failed request, so the corrupt call is never executed.
+    expect(events.some((e) => e.choices?.[0]?.finish_reason === "tool_calls")).toBe(false);
+    const err = events.find((e) => e.error)?.error;
+    expect(err?.message).toContain("cut off by max_tokens");
+    expect(events.some((e) => e.choices?.[0]?.finish_reason === "incomplete_reasoning")).toBe(true);
+  });
+
+  test("a complete tool call is forwarded untouched", async () => {
+    const { events } = await drive(() =>
+      stream([
+        callDelta("call_OK", "small.js"),
+        { id: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "}" } }] }, finish_reason: null }] },
+        finish("tool_calls"),
+      ]),
+    );
+    const args = events
+      .flatMap((e) => e.choices?.[0]?.delta?.tool_calls ?? [])
+      .map((t) => t.function?.arguments ?? "")
+      .join("");
+    expect(args).toBe('{"path":"small.js"}');
+    expect(JSON.parse(args).path).toBe("small.js");
+    expect(events.some((e) => e.error)).toBe(false);
+  });
+
+  test("a thinking-only non-stream body is recognised as starvation", async () => {
+    // Measured 3 of 6 runs at effort=max: `content` is a thinking part alone,
+    // `finish_reason` "length". Counting array entries called that non-empty, so
+    // the recovery walk never ran and the client got "" with a 200.
+    const prevFetch = globalThis.fetch;
+    const efforts: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (!url.startsWith(process.env.MISTRAL_BASE!)) return prevFetch(input, init);
+      const effort = JSON.parse(init.body).reasoning_effort;
+      efforts.push(effort);
+      const body =
+        effort === "low"
+          ? { id: "m", choices: [{ index: 0, message: { role: "assistant", content: [{ type: "text", text: "ANSWER" }] }, finish_reason: "stop" }] }
+          : {
+              id: "m",
+              choices: [{ index: 0, message: { role: "assistant", content: [{ type: "thinking", thinking: [{ type: "text", text: "thinking forever" }], closed: true }] }, finish_reason: "length" }],
+              usage: { prompt_tokens: 5, completion_tokens: 16384, completion_tokens_details: { reasoning_tokens: 16384 } },
+            };
+      return Response.json(body);
+    }) as typeof fetch;
+    try {
+      const r = await post({ model: "zai-glm-5-3-flash", messages: [], reasoning_effort: "max", max_tokens: 16384 });
+      const j = (await r.json()) as { choices?: { message?: { content?: unknown } }[]; error?: { message?: string } };
+      expect(efforts).toEqual(["max", "high", "low"]);
+      expect(j.choices[0].message.content).toBe("ANSWER");
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+
+  test("a truncated non-stream tool call is an error, not a silent 200", async () => {
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (!url.startsWith(process.env.MISTRAL_BASE!)) return prevFetch(input, init);
+      return Response.json({
+        id: "m",
+        choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "c", type: "function", function: { name: "write_file", arguments: '{"path":"big.js","content":"function f(){' } }] }, finish_reason: "tool_calls" }],
+        usage: { prompt_tokens: 10, completion_tokens: 16384 },
+      });
+    }) as typeof fetch;
+    try {
+      const r = await post({ model: "zai-glm-5-3-flash", messages: [], max_tokens: 16384 });
+      expect(r.status).toBe(502);
+      const j = (await r.json()) as { choices?: { message?: { content?: unknown } }[]; error?: { message?: string } };
+      expect(j.error.message).toContain("cut off by max_tokens");
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+});
+
+describe("multi-part text is concatenated, never separated", () => {
+  test("non-stream parts are fragments of one answer", async () => {
+    // Upstream returns one answer as several `text` parts. The stream path has
+    // always joined them with ""; the non-stream path joined with "\n", so the
+    // same completion came back with newlines the model never wrote. Pinned so
+    // the two paths cannot diverge again.
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (!url.startsWith(process.env.MISTRAL_BASE!)) return prevFetch(input, init);
+      const enc = new TextEncoder();
+      return new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(enc.encode(`data: ${JSON.stringify({
+              id: "m",
+              choices: [{ index: 0, delta: { content: [
+                { type: "text", text: "```js\nfunction f" },
+                { type: "text", text: "() { return 1; }\n```" },
+              ] }, finish_reason: null }],
+            })}\n\n`));
+            c.enqueue(enc.encode(`data: ${JSON.stringify({ id: "m", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`));
+            c.close();
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    }) as typeof fetch;
+    try {
+      const raw = await (await post({ model: "zai-glm-5-3-flash", messages: [], stream: true })).text();
+      const text = raw
+        .split("\n")
+        .filter((l) => l.startsWith("data: ") && !l.includes("[DONE]"))
+        .map((l) => JSON.parse(l.slice(6)) as { choices?: { delta?: { content?: string } }[] })
+        .map((e) => e.choices?.[0]?.delta?.content ?? "")
+        .join("");
+      expect(text).toBe("```js\nfunction f() { return 1; }\n```");
+      expect(text).not.toContain("f\n()");
     } finally {
       globalThis.fetch = prevFetch;
     }

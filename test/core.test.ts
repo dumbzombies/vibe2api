@@ -145,7 +145,8 @@ describe("wire protocol", () => {
   test("OpenAI non-stream: GLM array content joined", async () => {
     const r = await post("/v1/chat/completions", { model: "m", messages: [{ role: "user", content: "hi" }] });
     const j = await r.json();
-    expect(j.choices[0].message.content).toBe("Hi \nthere");
+    // Fragments of one answer: concatenate, exactly as the streaming path does.
+    expect(j.choices[0].message.content).toBe("Hi there");
     expect(j.choices[0].message.reasoning_content).toBe("plan: greet");
     expect(j.usage.total_tokens).toBe(5);
   });
@@ -259,7 +260,7 @@ describe("wire protocol", () => {
     expect(up.body.max_tokens).toBe(100);
     const j = await r.json();
     expect(j).toMatchObject({ type: "message", role: "assistant", stop_reason: "end_turn" });
-    expect(j.content).toEqual([{ type: "text", text: "Hi \nthere" }]);
+    expect(j.content).toEqual([{ type: "text", text: "Hi there" }]);
     expect(j.usage).toEqual({ input_tokens: 3, output_tokens: 2 });
   });
 
@@ -907,5 +908,121 @@ describe("starvation recovery without an explicit effort", () => {
     expect(r.status).toBe(502);
     const j = await r.json();
     expect(j.error.message).toContain("exhausted max_tokens on reasoning");
+  });
+});
+
+// ---- Tool calls: duplicated on retry, truncated without notice ----
+//
+// Both measured on the live endpoint with GLM 5.3 Flash. A tool-call delta
+// carries no text, so counting characters alone treated a turn that had already
+// emitted one as "nothing shown" and retried it; OpenAI clients merge deltas by
+// index, so the second attempt's arguments were concatenated onto the first
+// call's and the JSON became unparseable. And a call cut off by the output
+// budget reports `finish_reason: "tool_calls"`, not `"length"`, so truncation
+// was never noticed.
+describe("tool calls: no duplicate on retry, no silent truncation", () => {
+  const drive = async (respond: () => Response) => {
+    const efforts: string[] = [];
+    const prev = globalThis.fetch;
+    globalThis.fetch = (async (input, init) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (!url.startsWith(`http://localhost:${server.port}`)) return prev(input, init);
+      efforts.push(JSON.parse(init.body).reasoning_effort);
+      return respond();
+    }) as typeof fetch;
+    try {
+      const r = await post("/v1/chat/completions", {
+        model: "zai-glm-5-3-flash", stream: true, reasoning_effort: "high", max_tokens: 16384, messages: [],
+      });
+      const events = (await readSSE(r)).filter((l) => l.startsWith("data:") && !l.includes("[DONE]"))
+        .map((l) => JSON.parse(l.slice(5)));
+      return { efforts, events, status: r.status };
+    } finally { globalThis.fetch = prev; }
+  };
+  const enc = new TextEncoder();
+  const stream = (events, then) => new Response(new ReadableStream({
+    start(c) {
+      for (const e of events) c.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`));
+      if (then) then(c); else c.close();
+    },
+  }), { headers: { "Content-Type": "text/event-stream" } });
+  const callDelta = (id, path) => ({
+    id: "m",
+    choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id, type: "function", function: { name: "write_file", arguments: `{"path":"${path}"` } }] }, finish_reason: null }],
+  });
+
+  test("a reset after a tool-call delta is reported, not retried", async () => {
+    const { efforts, events } = await drive(() =>
+      stream([callDelta("call_A", "first.js")], (c) => setTimeout(() => c.error(new Error("socket hang up")), 10)));
+    expect(efforts).toEqual(["high"]);
+    expect(events.some((e) => e.choices?.[0]?.finish_reason === "incomplete_reasoning")).toBe(true);
+    const deltas = events.flatMap((e) => e.choices?.[0]?.delta?.tool_calls ?? []);
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0].id).toBe("call_A");
+  });
+
+  test("a truncated tool call is reported instead of finishing as tool_calls", async () => {
+    const { events } = await drive(() => stream([
+      callDelta("call_T", "big.js"),
+      { id: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'function f(){ ret' } }] }, finish_reason: null }] },
+      { id: "m", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 197, completion_tokens: 16384 } },
+    ]));
+    expect(events.some((e) => e.choices?.[0]?.finish_reason === "tool_calls")).toBe(false);
+    expect(events.find((e) => e.error)?.error?.message).toContain("cut off by max_tokens");
+  });
+
+  test("a complete tool call still finishes normally", async () => {
+    const { events } = await drive(() => stream([
+      callDelta("call_OK", "small.js"),
+      { id: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "}" } }] }, finish_reason: null }] },
+      { id: "m", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 5, completion_tokens: 9 } },
+    ]));
+    const args = events.flatMap((e) => e.choices?.[0]?.delta?.tool_calls ?? []).map((t) => t.function?.arguments ?? "").join("");
+    expect(JSON.parse(args)).toEqual({ path: "small.js" });
+    expect(events.some((e) => e.error)).toBe(false);
+  });
+
+  test("a thinking-only non-stream body is starvation, and recovers", async () => {
+    // `content` is a thinking part alone with finish_reason "length" — measured
+    // 3 of 6 runs at effort=max. Counting array entries called it an answer.
+    const prev = globalThis.fetch;
+    const efforts: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (!url.startsWith(`http://localhost:${server.port}`)) return prev(input, init);
+      const effort = JSON.parse(init.body).reasoning_effort;
+      efforts.push(effort);
+      return Response.json(effort === "low"
+        ? { id: "m", choices: [{ index: 0, message: { role: "assistant", content: [{ type: "text", text: "ANSWER" }] }, finish_reason: "stop" }] }
+        : {
+            id: "m",
+            choices: [{ index: 0, message: { role: "assistant", content: [{ type: "thinking", thinking: [{ type: "text", text: "thinking" }], closed: true }] }, finish_reason: "length" }],
+            usage: { prompt_tokens: 5, completion_tokens: 16384 },
+          });
+    }) as typeof fetch;
+    try {
+      const r = await post("/v1/chat/completions", { model: "zai-glm-5-3-flash", messages: [], reasoning_effort: "max", max_tokens: 16384 });
+      const j = await r.json();
+      expect(efforts).toEqual(["max", "high", "low"]);
+      expect(j.choices[0].message.content).toBe("ANSWER");
+    } finally { globalThis.fetch = prev; }
+  });
+
+  test("a truncated non-stream tool call is a 502, not a silent 200", async () => {
+    const prev = globalThis.fetch;
+    globalThis.fetch = (async (input, init) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (!url.startsWith(`http://localhost:${server.port}`)) return prev(input, init);
+      return Response.json({
+        id: "m",
+        choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "c", type: "function", function: { name: "write_file", arguments: '{"path":"big.js","content":"function f(){' } }] }, finish_reason: "tool_calls" }],
+        usage: { prompt_tokens: 10, completion_tokens: 16384 },
+      });
+    }) as typeof fetch;
+    try {
+      const r = await post("/v1/chat/completions", { model: "zai-glm-5-3-flash", messages: [], max_tokens: 16384 });
+      expect(r.status).toBe(502);
+      expect((await r.json()).error.message).toContain("cut off by max_tokens");
+    } finally { globalThis.fetch = prev; }
   });
 });

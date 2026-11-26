@@ -177,12 +177,15 @@ function nextKey(requestToken?: string): string | undefined {
 // Vibe returns typed parts: {type:"text"} plus
 // {type:"thinking", thinking:[{type:"text"}]}. OpenAI clients want the text
 // inline and the reasoning in a separate `reasoning_content` string.
+// Fragments of one answer, so they concatenate — `deltaText` (the streaming
+// path) already joins with "". Joining with "\n" here would inject newlines the
+// model never wrote whenever upstream splits an answer into several text parts.
 function textParts(content: unknown): string {
   if (!Array.isArray(content)) return typeof content === "string" ? content : "";
   return content
     .filter((p) => rec(p)?.type === "text" && typeof rec(p)?.text === "string")
     .map((p) => String(rec(p)?.text))
-    .join("\n");
+    .join("");
 }
 
 function deltaText(content: unknown): string {
@@ -361,6 +364,35 @@ function normalizeResponse(data0: unknown): unknown {
     }
   }
   return data0;
+}
+
+/**
+ * Whether a tool call's accumulated `arguments` string is complete JSON.
+ *
+ * Deliberately cheap rather than `JSON.parse`: arguments stream in fragments and
+ * are only assembled here, so a parse attempt on every delta would be O(n²). A
+ * bracket/brace depth walk that respects string escapes decides the same thing
+ * for the only failure mode that matters — a value cut off mid-string or
+ * mid-object, which leaves the depth positive or the string open.
+ */
+function isCompleteJson(args: string): boolean {
+  const s = args.trim();
+  if (!s || (s[0] !== "{" && s[0] !== "[")) return true; // not an object: nothing to balance
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (const ch of s) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{" || ch === "[") depth++;
+    else if (ch === "}" || ch === "]") depth--;
+  }
+  return depth === 0 && !inString;
 }
 
 // Mistral coalesces a content/tool delta with finish_reason into one chunk;
@@ -845,15 +877,34 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
       if (typeof reasoningTokens === "number") stats.reasoningOut += reasoningTokens;
       return { data };
     };
+    // Visible answer length. Mistral returns reasoning as a `thinking` part
+    // alongside the text, so counting array entries reported a thinking-only
+    // body as non-empty: measured 3 of 6 runs at effort=max returned
+    // `content:[{type:"thinking"}]` with `finish_reason:"length"`, and the
+    // client got `""` with a 200 instead of the starved-turn recovery.
     const contentOf = (data: Rec): number => {
       const message = rec(rec(Array.isArray(data.choices) ? data.choices[0] : undefined)?.message);
       const content = message?.content;
       if (typeof content === "string") return content.length;
-      return Array.isArray(content) ? content.length : 0;
+      if (!Array.isArray(content)) return 0;
+      return content
+        .filter((p) => rec(p)?.type === "text")
+        .reduce((n, p) => n + String(rec(p)?.text ?? "").length, 0);
     };
     // A `length` finish with no visible text: the whole budget went to reasoning.
     const starved = (data: Rec): boolean =>
       rec(Array.isArray(data.choices) ? data.choices[0] : undefined)?.finish_reason === "length" && contentOf(data) === 0;
+    /** A tool call whose arguments are not complete JSON was cut off mid-value. */
+    const truncatedCall = (data: Rec): { index: number; args: string } | undefined => {
+      const message = rec(rec(Array.isArray(data.choices) ? data.choices[0] : undefined)?.message);
+      const calls = message?.tool_calls;
+      if (!Array.isArray(calls)) return undefined;
+      for (const [index, raw] of calls.entries()) {
+        const args = rec(rec(raw)?.function)?.arguments;
+        if (typeof args === "string" && args.trim() !== "" && !isCompleteJson(args)) return { index, args };
+      }
+      return undefined;
+    };
 
     let outcome = await read(upstream);
     let effort = body.reasoning_effort;
@@ -877,6 +928,19 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
         res,
         502,
         "the model exhausted max_tokens on reasoning before writing any answer; lower the thinking level",
+      );
+    }
+    // Same silent truncation as the stream path: `finish_reason` is
+    // "tool_calls", so nothing above notices, and the agent would receive
+    // arguments that are not valid JSON.
+    const broken = outcome.data ? truncatedCall(outcome.data) : undefined;
+    if (broken) {
+      stats.errors++;
+      return sendError(
+        res,
+        502,
+        `tool call ${broken.index} was cut off by max_tokens after ${broken.args.length} characters of arguments; ask for a smaller edit or raise max_tokens`,
+        { code: "truncated_tool_call" },
       );
     }
     return sendJson(res, 200, outcome.data ?? {});
@@ -921,7 +985,14 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
 
     let sawFinish = false;
     let cutOff = false;
-    let visibleChars = 0;
+    // Anything the client has already been shown. Text is not the only payload:
+    // a tool-call delta carries no text, and retrying after one has been written
+    // hands the client two calls at the same index. OpenAI clients merge deltas
+    // by index, so the retry's arguments are concatenated onto the first call's
+    // and the JSON is corrupt (`{"path":"a.js"{"path":"b.js"}`) — measured.
+    let payload = 0;
+    // Per tool-call index, so a truncated arguments string can be detected.
+    const toolArgs = new Map<number, string>();
     let failure: string | undefined;
     const held: Rec[] = [];
     try {
@@ -945,8 +1016,20 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
           const o = rec(out);
           const first = Array.isArray(o?.choices) ? rec((o!.choices as unknown[])[0]) : undefined;
           const dd = rec(first?.delta);
-          const hasText = typeof dd?.content === "string" && dd.content.length > 0;
-          if (hasText) visibleChars += (dd!.content as string).length;
+          const text = typeof dd?.content === "string" ? dd.content : "";
+          if (text.length) payload += text.length;
+          // Tool-call deltas are visible output too: `arguments` arrives in
+          // fragments, so accumulate per index for the truncation check below.
+          if (Array.isArray(dd?.tool_calls)) {
+            for (const raw of dd.tool_calls) {
+              const tc = rec(raw);
+              if (!tc) continue;
+              const index = typeof tc.index === "number" ? tc.index : 0;
+              const frag = rec(tc.function)?.arguments;
+              toolArgs.set(index, (toolArgs.get(index) ?? "") + (typeof frag === "string" ? frag : ""));
+              payload++;
+            }
+          }
           // Hold nothing but a turn-ending chunk: everything before it is live
           // output the client is already rendering.
           if (first?.finish_reason) held.push(o!);
@@ -964,14 +1047,29 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
     }
 
     // Retryable means "the client has been shown nothing yet": either the whole
-    // budget went to reasoning, or the connection died before any text arrived.
-    // Both discard no visible output, so a silent retry is invisible to the user
-    // — and a mid-stream reset with nothing on screen is precisely the reported
-    // "stops in the middle of a loop". Once text has been sent, retrying would
-    // duplicate it, so those turns are reported instead.
-    const starved = !failure && cutOff && visibleChars === 0;
-    const retryable = starved || (failure !== undefined && visibleChars === 0);
+    // budget went to reasoning, or the connection died before any output
+    // arrived. Both discard no visible output, so a silent retry is invisible.
+    // Text OR tool-call deltas count as shown: retrying after a tool call was
+    // written duplicates it at the same index, and the OpenAI client merges the
+    // two argument strings into invalid JSON.
+    const starved = !failure && cutOff && payload === 0;
+    const retryable = starved || (failure !== undefined && payload === 0);
     if (retryable) return { starved, failure, body, retryable };
+    // A tool call cut off by the output budget ends with `finish_reason:
+    // "tool_calls"` — NOT "length" — so nothing above notices it. Measured on
+    // GLM 5.3 Flash at max_tokens 16384: a 6000-line write_file call returns
+    // 16384/16384 completion tokens, `finish_reason: "tool_calls"`, and an
+    // arguments string that ends mid-string. Handing that to the agent makes it
+    // either fail to parse or, worse, write a silently truncated file. Report
+    // it so the turn is retried with a smaller edit instead of landing corrupt.
+    const broken = [...toolArgs.entries()].find(([, args]) => args.trim() !== "" && !isCompleteJson(args));
+    if (!failure && broken) {
+      const [index, args] = broken;
+      held.length = 0; // never forward the call *or* its finish; both are unusable
+      failure =
+        `tool call ${index} was cut off by max_tokens after ${args.length} characters of arguments` +
+        "; ask for a smaller edit or raise max_tokens";
+    }
     // Keep the finish chunk for last, after any error framing.
     for (const h of held.splice(0)) res.write(`data: ${sseJson(h)}\n\n`);
     if (!sawFinish) failure = "upstream ended the stream without a finish_reason; the reply is incomplete";

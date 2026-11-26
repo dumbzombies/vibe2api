@@ -74,7 +74,10 @@ describe("opencode mistral-vibe plugin", () => {
     expect(j.choices[0].message.reasoning_content).toBe("think");
     const sent = seen.at(-1)!;
     expect(sent.auth).toBe("Bearer mstrl_octest");
-    expect(sent.body.reasoning_effort).toBe("high");
+    // GLM accepts only {low, high, max}; `medium` maps DOWN to low. It used to
+    // map to `high`, which spends the whole output budget on reasoning and
+    // returns an empty reply (measured).
+    expect(sent.body.reasoning_effort).toBe("low");
     expect(sent.body.max_tokens).toBe(50);
     expect(sent.body.store).toBeUndefined();
     // What routes spend to the Vibe allowance (UA alone stopped working 2026-11-25).

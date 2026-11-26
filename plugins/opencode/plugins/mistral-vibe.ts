@@ -60,12 +60,15 @@ function keysFor(token?: string): string[] {
 
 // ---------- Mistral content reshaping ----------
 
+// Fragments of one answer, so they concatenate — `deltaText` (the streaming
+// path) already joins with "". Joining with "\n" here would inject newlines the
+// model never wrote whenever upstream splits an answer into several text parts.
 function textParts(content: unknown): string {
   if (!Array.isArray(content)) return typeof content === "string" ? content : "";
   return content
     .filter((p) => rec(p)?.type === "text" && typeof rec(p)?.text === "string")
     .map((p) => String(rec(p)?.text))
-    .join("\n");
+    .join("");
 }
 
 function deltaText(content: unknown): string {
@@ -90,26 +93,35 @@ function reasoningText(content: unknown): string {
   return out;
 }
 
-// Measured on the live endpoint: each model accepts only its own subset of
-// {none,minimal,low,medium,high} and 400s anything else.
+// Measured on the live endpoint: each model accepts only its own subset and
+// 400s anything else. GLM's `medium` is NOT accepted — and routing it to `high`
+// (as this table used to) is the level that spends the whole output budget on
+// reasoning and returns an empty reply, so it maps to `low`. `max` passes
+// through: the endpoint accepts it and it is the only level above `high`.
 const NEAREST_LOW_HIGH: Record<string, string> = {
-  off: "low", minimal: "low", low: "low", medium: "high", high: "high", xhigh: "high", max: "high",
+  off: "low", minimal: "low", low: "low", medium: "low", high: "high", xhigh: "high", max: "max",
 };
-const NO_LOW: Record<string, string> = { ...NEAREST_LOW_HIGH, off: "none", minimal: "none", low: "none" };
-const OFF_NONE: Record<string, string> = { ...NEAREST_LOW_HIGH, off: "none" };
+const NO_LOW: Record<string, string> = { ...NEAREST_LOW_HIGH, off: "none", minimal: "none", low: "none", medium: "high" };
+const OFF_NONE: Record<string, string> = { ...NEAREST_LOW_HIGH, off: "none", minimal: "none", xhigh: "xhigh" };
+const LARGE: Record<string, string> = { ...NEAREST_LOW_HIGH, medium: "medium", max: "high" };
 
 const REASONING_EFFORTS: Record<string, Record<string, string>> = {
   "zai-glm-5-3": NEAREST_LOW_HIGH,
   "zai-glm-5-3-flash": NEAREST_LOW_HIGH,
   "deepseek-v4-1-flash-1017": OFF_NONE,
-  "mistral-large-4-0": NEAREST_LOW_HIGH,
+  "mistral-large-4-0": LARGE,
   "mistral-medium-latest": NO_LOW,
 };
 
 function mapReasoning(effort: unknown, model: unknown): string | undefined {
   if (effort === undefined || effort === null || effort === "") return undefined;
-  const table = REASONING_EFFORTS[String(model)];
-  return table?.[String(effort)] ?? String(effort);
+  // Own-property lookups only: a model or level named "constructor" or
+  // "__proto__" would otherwise resolve to an Object.prototype member.
+  const name = String(model);
+  const table = Object.hasOwn(REASONING_EFFORTS, name) ? REASONING_EFFORTS[name] : undefined;
+  const key = String(effort);
+  const mapped = table && Object.hasOwn(table, key) ? table[key] : undefined;
+  return typeof mapped === "string" ? mapped : key;
 }
 
 const OPENAI_REJECTED = ["store", "service_tier", "safety_identifier"];
@@ -167,6 +179,27 @@ function normalizeResponse(data0: unknown): unknown {
     }
   }
   return data0;
+}
+
+/** Complete JSON? Depth walk, not `JSON.parse`: arguments stream in fragments. */
+function isCompleteJson(args: string): boolean {
+  const s = args.trim();
+  if (!s || (s[0] !== "{" && s[0] !== "[")) return true;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (const ch of s) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{" || ch === "[") depth++;
+    else if (ch === "}" || ch === "]") depth--;
+  }
+  return depth === 0 && !inString;
 }
 
 // Mistral coalesces a content/tool delta with finish_reason into one chunk;
@@ -433,6 +466,25 @@ async function complete(req: IncomingMessage, res: ServerResponse, token?: strin
   if (!stream) {
     const data = (normalizeResponse(await upstream.json()) as Rec) ?? {};
     recordUsage(rec(data.usage));
+    // A tool call cut off by the output budget still reports
+    // `finish_reason: "tool_calls"`, so its arguments end mid-value and the
+    // agent either fails to parse or writes a silently truncated file.
+    const calls = rec(rec((data.choices as unknown[])?.[0])?.message)?.tool_calls;
+    if (Array.isArray(calls)) {
+      const broken = calls.findIndex((c) => {
+        const args = rec(rec(c)?.function)?.arguments;
+        return typeof args === "string" && args.trim() !== "" && !isCompleteJson(args);
+      });
+      if (broken !== -1) {
+        stats.errors++;
+        return sendError(
+          res,
+          502,
+          `tool call ${broken} was cut off by max_tokens; ask for a smaller edit or raise max_tokens`,
+          { code: "truncated_tool_call" },
+        );
+      }
+    }
     return sendJson(res, 200, data);
   }
 
