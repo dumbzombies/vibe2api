@@ -1,0 +1,7 @@
+{
+  "name": "mistral-vibe-pi",
+  "version": "0.0.0-test",
+  "type": "module",
+  "omp": { "extensions": ["./extensions/mistral-vibe-quota.ts"] },
+  "pi": { "extensions": ["./extensions/mistral-vibe-quota.ts"] }
+}

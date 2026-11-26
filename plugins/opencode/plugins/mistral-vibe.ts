@@ -154,6 +154,7 @@ function normalizeBody(body0: Rec): Rec {
       if (!msg) continue;
       delete msg.reasoning_content;
       delete msg.reasoning;
+      if (msg.role === "developer") msg.role = "system";
     }
   }
   return out;

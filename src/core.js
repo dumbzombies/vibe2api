@@ -554,11 +554,14 @@ function normalizeOpenAIBody(body) {
   }
   // Mistral rejects `reasoning_content` on replayed assistant turns (422
   // extra_forbidden); the reasoning is output-only.
+  // pi and newer OpenAI clients send `role: "developer"`; Mistral's enum is
+  // system|user|assistant|tool, and answers 422 union_tag_invalid otherwise.
   if (Array.isArray(out.messages)) {
     for (const m of out.messages) {
       if (!m || typeof m !== 'object') continue;
       delete m.reasoning_content;
       delete m.reasoning;
+      if (m.role === 'developer') m.role = 'system';
     }
   }
   return out;

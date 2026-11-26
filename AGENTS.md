@@ -18,7 +18,10 @@ streaming and non-streaming.
 - `test/core.test.ts` — mock-upstream suite (`bun test`)
 - `test/worker.test.ts` — runs the wrangler-built Worker bundle (`npm run test:all`)
 - `test/install.test.ts` — runs each installer against a scratch HOME
-- `plugins/` — omp/pi, opencode and hermes provider plugins (`plugins/README.md`)
+- `plugins/` — opencode and hermes provider plugins, plus the omp/pi installer
+  that installs [dumbzombies/mistral-vibe-pi](https://github.com/dumbzombies/mistral-vibe-pi)
+  from GitHub (`plugins/README.md`); the extension source and its tests live in
+  that repo, not here
 - `install.sh` + `install/` — one-shot installers (`./install.sh --help`)
 
 ## Commands
@@ -54,10 +57,12 @@ streaming and non-streaming.
 - hermes on Hostinger runs in the `hermes` container (`docker exec`), and
   `hermes usage` passes no credentials to the hook, so the plugin resolves
   `MISTRAL_VIBE_KEY`/`MISTRAL_VIBE_BASE_URL` from env or `$HERMES_HOME/.env`.
-- The omp and opencode plugins are self-contained: each owns a loopback
-  OpenAI-compatible server and calls `api.mistral.ai` with the Vibe UA directly.
-  The omp plugin runs it as one daemon per user (`~/.mistral-vibe/omp-server.json`
-  + `/healthz` `service: "mistral-vibe-omp"`, detached spawn). Clients never
+- The omp plugin lives in its own repo (`mistral-vibe-pi`) and the opencode
+  plugin here; both are self-contained: each owns a loopback OpenAI-compatible
+  server and calls `api.mistral.ai` with the Vibe UA directly.
+  The omp plugin runs it as one daemon per user
+  (`~/.mistral-vibe/omp-server.json` + `/healthz` `service: "mistral-vibe-omp"`,
+  detached spawn); `install.sh omp` installs that repo, it does not copy files. Clients never
   probe: the daemon picks the port and publishes it, and a port answering with a
   different `service` is never adopted. The daemon is spawned with a resolved
   `bun`/`node` (`MISTRAL_VIBE_RUNTIME` overrides), never with

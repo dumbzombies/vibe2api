@@ -6,7 +6,7 @@
 // Everything is confined to a temp dir: no test touches the real ~/.omp,
 // ~/.pi, ~/.config/opencode or ~/.hermes.
 import { describe, expect, test, afterAll } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,30 +43,60 @@ describe("installers", () => {
     expect(out).toContain('"ok":true');
   }, 60_000);
 
-  test("omp: installs into both agent dirs and strips a stale models.yml block", async () => {
+  // The plugin surfaces are real CLIs: a machine without them cannot be
+  // installed into, so those cases skip instead of failing.
+  const haveOmp = Bun.which("omp") !== null;
+  const havePi = Bun.which("pi") !== null;
+
+  test.skipIf(!haveOmp)("omp: registers a plugin package and drops the loose extension copy", async () => {
     const omp = join(scratch, "omp");
-    const pi = join(scratch, "pi");
-    mkdirSync(join(omp, "extensions"), { recursive: true });
-    mkdirSync(join(pi, "extensions"), { recursive: true });
-    // Exactly what an older install left behind: a trailing provider block.
+    const ext = join(omp, "extensions");
+    mkdirSync(ext, { recursive: true });
+    // Exactly what an older install left behind: a loose extension file and a
+    // trailing provider block. Both would register the provider a second time.
+    writeFileSync(join(ext, "mistral-vibe-quota.ts"), "// old copy\n");
     writeFileSync(join(omp, "models.yml"), "providers:\n  other:\n    baseUrl: x\n  mistral-vibe:\n    baseUrl: http://old\n");
 
-    const { code, out } = await run("install.sh", ["omp"], { OMP_AGENT_DIR: omp, PI_AGENT_DIR: pi });
-    expect({ code }).toEqual({ code: 0 });
-    expect(existsSync(join(omp, "extensions", "mistral-vibe-quota.ts"))).toBe(true);
-    expect(existsSync(join(pi, "extensions", "mistral-vibe-quota.ts"))).toBe(true);
+    // Installing from the network would be slow and non-hermetic; point the
+    // installer at a local fixture that has the same manifest shape.
+    const { code, out } = await run("install.sh", ["omp", "--omp"], {
+      OMP_AGENT_DIR: omp,
+      MISTRAL_VIBE_PI_SOURCE: join(ROOT, "test", "fixtures", "plugin"),
+    });
+    expect(code).toBe(0);
+    // The package is registered, and the agent's own list is the authority.
+    const lock = JSON.parse(readFileSync(join(scratch, ".omp", "plugins", "omp-plugins.lock.json"), "utf8"));
+    expect(Object.keys(lock.plugins)).toContain("mistral-vibe-pi");
+    // Not duplicated: the loose copy is gone, so only the package loads.
+    expect(existsSync(join(ext, "mistral-vibe-quota.ts"))).toBe(false);
+    expect(out).toContain("removed loose extension copy");
     const models = readFileSync(join(omp, "models.yml"), "utf8");
     expect(models).not.toContain("mistral-vibe");
     // The neighbouring provider must survive: the trim is not a truncate-all.
     expect(models).toContain("other:");
     expect(out).toContain("backup");
-  }, 30_000);
+  }, 60_000);
 
-  test("omp: refuses to guess when pointed at a missing agent dir", async () => {
-    const { code, out } = await run("install.sh", ["omp", "--omp"], { OMP_AGENT_DIR: join(scratch, "nope") });
-    expect(code).toBe(1);
-    expect(out).toContain("agent dir not found");
-  }, 20_000);
+  test.skipIf(!havePi)("pi: records the package in settings.json and drops the loose extension copy", async () => {
+    const home = join(scratch, "pi-home");
+    const agent = join(home, ".pi", "agent");
+    mkdirSync(join(agent, "extensions"), { recursive: true });
+    writeFileSync(join(agent, "extensions", "mistral-vibe-quota.ts"), "// old copy\n");
+
+    const { code } = await run("install.sh", ["omp", "--pi"], {
+      HOME: home,
+      PI_CODING_AGENT_DIR: agent,
+      PI_AGENT_DIR: agent,
+      MISTRAL_VIBE_PI_SOURCE: join(ROOT, "test", "fixtures", "plugin"),
+    });
+    expect(code).toBe(0);
+    const settings = JSON.parse(readFileSync(join(agent, "settings.json"), "utf8"));
+    // pi stores a local source as a path relative to the settings file, so the
+    // package name never appears verbatim; the resolved fixture path does.
+    expect(settings.packages.length).toBe(1);
+    expect(realpathSync(join(agent, settings.packages[0]))).toBe(realpathSync(join(ROOT, "test", "fixtures", "plugin")));
+    expect(existsSync(join(agent, "extensions", "mistral-vibe-quota.ts"))).toBe(false);
+  }, 60_000);
 
   test("opencode: merges the provider and keeps the rest of opencode.jsonc", async () => {
     const cfg = join(scratch, "oc");

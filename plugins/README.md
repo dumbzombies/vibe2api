@@ -5,7 +5,7 @@ $300/month Vibe allowance instead of the $30 API budget.
 
 | plugin | target | self-contained? | gives you |
 |---|---|---|---|
-| `omp/` | omp **and** pi | yes — binds a loopback server inside the agent | provider, `/login` entry, `/vibe-usage` |
+| `omp/` | omp **and** pi | yes — one daemon per user on loopback | provider, `/login` entry, `/vibe-usage` |
 | `opencode/` | opencode | yes — binds `127.0.0.1:8796` on load | provider block, `/vibe-quota` command |
 | `hermes/` | hermes | no — talks to the proxy/Worker | provider, `hermes usage` gauge |
 | `shared/` | anything | — | `vibe-quota` script |
@@ -33,14 +33,26 @@ shape clients expect:
 - `max_completion_tokens` is aliased, `temperature: 0` forces `top_p: 1`
 - SSE is ASCII-escaped so a chunk-splitting transport cannot corrupt it
 
+The omp/pi integration lives in its own repo,
+[`dumbzombies/mistral-vibe-pi`](https://github.com/dumbzombies/mistral-vibe-pi),
+as a **plugin package** (`package.json` declares `omp.extensions` and
+`pi.extensions`). The agent's plugin registry owns installation, updates and
+removal; this repo only wraps the install with the key and cleanup steps below.
+
 ## omp / pi
 
 ```bash
 ./install.sh omp            # or: ./plugins/omp/install.sh [--omp] [--pi]
 ```
 
-- Installs `extensions/mistral-vibe-quota.ts` into `~/.omp/agent` and/or
-  `~/.pi/agent` (`OMP_AGENT_DIR` / `PI_AGENT_DIR` override).
+- Runs `omp plugin install https://github.com/dumbzombies/mistral-vibe-pi` and
+  `pi install https://github.com/dumbzombies/mistral-vibe-pi`. Verify with
+  `omp plugin list` / `pi list`; the installer fails if the package is not
+  listed afterwards. `MISTRAL_VIBE_PI_SOURCE` overrides the source (a fork, a
+  pinned tag, or a local checkout).
+- Removes any `mistral-vibe-quota.ts` an older version copied into
+  `~/.omp/agent/extensions` or `~/.pi/agent/extensions`: a loose extension and
+  the package would register the provider and `/vibe-usage` twice.
 - The extension owns one daemon per user, preferring `127.0.0.1:8790`. It reads
   `~/.mistral-vibe/omp-server.json`, verifies `GET /healthz` reports
   `service: "mistral-vibe-omp"`, and reuses it; with nothing there it spawns the
@@ -67,6 +79,8 @@ shape clients expect:
 - The installer removes a stale provider block from `models.yml` that older
   versions appended (backup `models.yml.bak-vibe2api`); registering the provider
   twice breaks `/model`.
+- Uninstall: `omp plugin uninstall mistral-vibe-pi` and `pi remove <dir>`. Nothing
+  is left in the agent dirs.
 
 ## opencode
 

@@ -211,6 +211,21 @@ describe("wire protocol", () => {
     expect(msgs[1].content).toBe("hello");
   });
 
+  test("a developer-role message reaches Mistral as system", async () => {
+    await post("/v1/chat/completions", {
+      model: "m",
+      messages: [
+        { role: "developer", content: "be terse" },
+        { role: "user", content: "hi" },
+      ],
+    });
+    const msgs = seen.at(-1).body.messages;
+    // Mistral's role enum is system|user|assistant|tool; anything else is a
+    // 422 union_tag_invalid (observed with pi 1.5.2).
+    expect(msgs[0].role).toBe("system");
+    expect(msgs[0].content).toBe("be terse");
+  });
+
   test("fields Mistral rejects are dropped, max_completion_tokens mapped", async () => {
     await post("/v1/chat/completions", {
       model: "m",

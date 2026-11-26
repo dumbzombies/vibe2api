@@ -137,11 +137,21 @@ curl -s https://<your-worker>.workers.dev/health
 ### 3. omp and pi
 
 ```bash
-./install.sh omp                          # every agent dir that exists
-./install.sh omp --omp                    # only ~/.omp/agent
+./install.sh omp                          # omp and/or pi, whichever is installed
+./install.sh omp --omp                    # only omp
+./install.sh omp --pi                     # only pi
 ```
 
-The extension runs one daemon per user (prefers `127.0.0.1:8790`, published in
+Installs [dumbzombies/mistral-vibe-pi](https://github.com/dumbzombies/mistral-vibe-pi)
+with the agents' own commands (`omp plugin install`, `pi install`), so they own
+loading, updates and removal: `omp plugin list` shows `mistral-vibe-pi@…` and
+`pi list` shows the package. Nothing is copied into `~/.omp/agent/extensions`;
+a loose extension file plus the package would register the provider and
+`/vibe-usage` twice, so the installer deletes any copy an older version left
+behind. Removal is `omp plugin uninstall mistral-vibe-pi` /
+`pi remove git:github.com/dumbzombies/mistral-vibe-pi`.
+
+The plugin runs one daemon per user (prefers `127.0.0.1:8790`, published in
 `~/.mistral-vibe/omp-server.json`, identified by `GET /healthz` →
 `service: "mistral-vibe-omp"`) and registers the provider against it. A second
 agent reuses the running daemon instead of binding another port; the daemon
@@ -287,7 +297,7 @@ src/core.js       all shared logic: routing, auth, translation, billing (Web-sta
 src/server.js     local entry — node:http, runs on Bun and Node
 src/ui.html       dashboard (served by both the local server and the Worker)
 cfwork/           Worker entry + wrangler config
-plugins/omp/      omp/pi extension (in-process server + /login + /vibe-usage)
+plugins/omp/      omp/pi plugin package (daemon server + /login + /vibe-usage)
 plugins/opencode/ opencode plugin + command
 plugins/hermes/   hermes model-provider plugin
 plugins/shared/   vibe-quota.sh (proxy, then billing, then Mistral direct)
