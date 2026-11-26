@@ -1099,6 +1099,9 @@ describe("recovery ladder: per-model and bounded", () => {
     globalThis.fetch = (async (input: any, init?: any) => {
       const url = typeof input === "string" ? input : input.url;
       if (!url.startsWith(process.env.MISTRAL_BASE!)) return prevFetch(input, init);
+      // The catalog warm-up also fetches from the mock; only chat POSTs count,
+      // or the "hang up" branch would answer the wrong request.
+      if (init?.body === undefined) return prevFetch(input, init);
       calls++;
       const enc = new TextEncoder();
       if (calls === 1) {
@@ -1229,36 +1232,39 @@ describe("tool calls are never duplicated or delivered truncated", () => {
     }
   };
 
-  test("a reset after a tool-call delta is reported, never retried", async () => {
+  test("a reset after a buffered tool-call delta is retried silently", async () => {
     const { calls, events } = await drive(() =>
       stream([callDelta("call_A", "first.js")], (c) => setTimeout(() => c.error(new Error("socket hang up")), 10)),
     );
-    // One attempt only: the client has already received `call_A`.
-    expect(calls).toEqual(["high"]);
+    // Tool-call deltas are held, never streamed, so the reset discarded
+    // nothing the client saw and the ladder walk is invisible.
+    expect(calls).toEqual(["high", "low"]);
+    // The broken attempt delivered nothing: no tool delta ever leaks, and no
+    // second call is appended at the same index (that is what corrupted the JSON
+    // before buffering: `{"path":"first.js"{"path":"first.js"}`).
+    expect(events.flatMap((e) => e.choices?.[0]?.delta?.tool_calls ?? [])).toHaveLength(0);
     expect(events.some((e) => e.choices?.[0]?.finish_reason === "incomplete_reasoning")).toBe(true);
-    const toolDeltas = events.flatMap((e) => e.choices?.[0]?.delta?.tool_calls ?? []);
-    // The one call the model did emit reaches the client once, and no second
-    // call is appended at the same index (that is what corrupted the JSON).
-    expect(toolDeltas).toHaveLength(1);
-    expect(toolDeltas[0].id).toBe("call_A");
   });
 
-  test("a truncated tool call is reported instead of forwarded", async () => {
+  test("a truncated tool call is retried at a lower effort before failing", async () => {
     // `finish_reason` is "tool_calls" — the shape measured on the live endpoint
-    // when a large write_file call hits the output budget — with arguments that
-    // end mid-string. `usage` is pinned at the cap to match that measurement.
-    const { calls, events, raw } = await drive(() =>
+    // when GLM burns its output budget on reasoning and ends the arguments
+    // mid-string — with `usage` pinned at the cap to match that measurement.
+    const { calls, events } = await drive(() =>
       stream([
         callDelta("call_T", "big.js"),
         { id: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'function f(){ ret' } }] }, finish_reason: null }] },
         finish("tool_calls", { prompt_tokens: 197, completion_tokens: 16384 }),
       ]),
     );
-    expect(calls).toEqual(["high"]); // truncation is not an effort problem
-    // Argument deltas stream live, so the partial call is visible — but no
-    // usable finish is ever sent. omp turns `incomplete_reasoning` into a
-    // failed request, so the corrupt call is never executed.
+    // The truncated call was held back, so the walk retried at `low`; the
+    // upstream keeps truncating, so the turn finally fails.
+    expect(calls).toEqual(["high", "low"]);
+    // No partial call and no usable finish ever reach the client: omp turns
+    // `incomplete_reasoning` into a failed request, so a corrupt call is never
+    // executed and a truncated file is never written.
     expect(events.some((e) => e.choices?.[0]?.finish_reason === "tool_calls")).toBe(false);
+    expect(events.flatMap((e) => e.choices?.[0]?.delta?.tool_calls ?? [])).toHaveLength(0);
     const err = events.find((e) => e.error)?.error;
     expect(err?.message).toContain("cut off by max_tokens");
     expect(events.some((e) => e.choices?.[0]?.finish_reason === "incomplete_reasoning")).toBe(true);

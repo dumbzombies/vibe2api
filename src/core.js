@@ -789,11 +789,9 @@ async function handleOpenAI(body0, env, requestId) {
     let usage = null;
     let sawFinish = false;
     let cutOff = false;
-    // Everything the client has already been shown. A tool-call delta carries no
-    // text, so counting characters alone made a retry look invisible after a
-    // tool call had been written; OpenAI clients merge deltas by index, so the
-    // retry's arguments would be concatenated onto the first call's and the JSON
-    // corrupted (`{"path":"a.js"{"path":"b.js"}`).
+    // Text the client has already been shown. Tool-call deltas are held, not
+    // shown, so they no longer pin a turn to its first attempt; text does,
+    // because a retry after visible text would duplicate it.
     let payload = 0;
     const toolArgs = new Map();
     let failure;
@@ -815,10 +813,14 @@ async function handleOpenAI(body0, env, requestId) {
               const index = typeof tc?.index === 'number' ? tc.index : 0;
               const frag = tc?.function?.arguments;
               toolArgs.set(index, (toolArgs.get(index) ?? '') + (typeof frag === 'string' ? frag : ''));
-              payload++;
+              // Buffered below, not shown: no payload.
             }
           }
-          if (out?.choices?.[0]?.finish_reason) held.push(out);
+          // Tool-call deltas are buffered, never streamed live: the client can
+          // only act on a call once its finish chunk arrives, and holding them
+          // makes a truncated call recoverable (GLM ends arguments mid-string
+          // with `finish_reason: "tool_calls"` when reasoning eats the budget).
+          if (out?.choices?.[0]?.finish_reason || Array.isArray(d?.tool_calls)) held.push(out);
           else ctrl.enqueue(encoder.encode(`data: ${sseJson(out)}\n\n`));
         }
       }
@@ -831,21 +833,24 @@ async function handleOpenAI(body0, env, requestId) {
       failure = 'upstream ended the stream without a finish_reason; the reply is incomplete';
     }
     const starved = cutOff && payload === 0 && failure === undefined;
-    const retryable = payload === 0 && (starved || failure !== undefined);
+    // A truncated tool call was held back, so the client saw nothing from this
+    // attempt: it is as recoverable as a starved one — same walk, same silence.
+    let truncated;
+    for (const [index, args] of toolArgs) {
+      if (args.trim() !== '' && !isCompleteJson(args)) { truncated = { index, args }; break; }
+    }
+    const retryable = payload === 0 && (starved || truncated !== undefined || failure !== undefined);
+    if (retryable) return { usage, failure, starved, retryable, truncated, held };
     // A tool call cut off by the output budget still reports
     // `finish_reason: "tool_calls"`, so nothing above notices: measured on GLM
     // 5.3 Flash, a 6000-line write_file call returns 16384/16384 tokens with
     // arguments ending mid-string. Forwarding that makes the agent parse-fail
     // or write a truncated file.
-    let truncated;
-    for (const [index, args] of toolArgs) {
-      if (args.trim() !== '' && !isCompleteJson(args)) { truncated = { index, args }; break; }
-    }
-    if (!failure && truncated) {
+    if (truncated) {
       held.length = 0; // the call and its finish are both unusable
       failure = `tool call ${truncated.index} was cut off by max_tokens after ${truncated.args.length} characters of arguments; ask for a smaller edit or raise max_tokens`;
     }
-    return { usage, failure, starved, retryable, held };
+    return { usage, failure, starved, retryable: false, held };
   };
 
   const sse = new ReadableStream({
@@ -866,6 +871,10 @@ async function handleOpenAI(body0, env, requestId) {
         if (next.failure && !next.starved) { outcome = next; break; }
         outcome = next;
         if (!outcome.retryable) break;
+      }
+      if (outcome.retryable && outcome.truncated && outcome.failure === undefined) {
+        outcome.failure = `tool call ${outcome.truncated.index} was cut off by max_tokens after ${outcome.truncated.args.length} characters of arguments; ask for a smaller edit or raise max_tokens`;
+        outcome.retryable = false;
       }
       if (outcome.starved && outcome.failure === undefined) {
         outcome.failure = 'the model exhausted max_tokens on reasoning before writing any answer; lower the thinking level';

@@ -425,6 +425,13 @@ function isCompleteJson(args: string): boolean {
   return depth === 0 && !inString;
 }
 
+/** The first tool call whose accumulated `arguments` are not complete JSON. */
+function brokenToolCall(toolArgs: Map<number, string>): { index: number; args: string } | undefined {
+  for (const [index, args] of toolArgs) {
+    if (args.trim() !== "" && !isCompleteJson(args)) return { index, args };
+  }
+  return undefined;
+}
 // Mistral coalesces a content/tool delta with finish_reason into one chunk;
 // OpenAI SDKs flush tool-call state only on a dedicated finish chunk.
 function normalizeStreamChunk(evt0: unknown): unknown[] {
@@ -1038,7 +1045,7 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
   const attempt = async (
     b: Rec,
     prefetched?: Response,
-  ): Promise<{ starved: boolean; retryable?: boolean; failure?: string; body?: ReadableStream<Uint8Array> | null }> => {
+  ): Promise<{ starved: boolean; retryable?: boolean; failure?: string; body?: ReadableStream<Uint8Array> | null; truncatedCall?: { index: number; args: string } }> => {
     // The first attempt reuses the response already fetched for the status
     // checks above. Re-issuing it would bill the same prompt twice.
     const result = prefetched ? ({ kind: "response", res: prefetched } as const) : await upstreamChat(b, true, token);
@@ -1051,11 +1058,9 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
 
     let sawFinish = false;
     let cutOff = false;
-    // Anything the client has already been shown. Text is not the only payload:
-    // a tool-call delta carries no text, and retrying after one has been written
-    // hands the client two calls at the same index. OpenAI clients merge deltas
-    // by index, so the retry's arguments are concatenated onto the first call's
-    // and the JSON is corrupt (`{"path":"a.js"{"path":"b.js"}`) — measured.
+    // Text the client has already been shown. Tool-call deltas are held, not
+    // shown, so they no longer pin a turn to its first attempt; text does,
+    // because a retry after visible text would duplicate it.
     let payload = 0;
     // Per tool-call index, so a truncated arguments string can be detected.
     const toolArgs = new Map<number, string>();
@@ -1084,8 +1089,7 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
           const dd = rec(first?.delta);
           const text = typeof dd?.content === "string" ? dd.content : "";
           if (text.length) payload += text.length;
-          // Tool-call deltas are visible output too: `arguments` arrives in
-          // fragments, so accumulate per index for the truncation check below.
+          // Accumulate `arguments` per index for the truncation check below.
           if (Array.isArray(dd?.tool_calls)) {
             for (const raw of dd.tool_calls) {
               const tc = rec(raw);
@@ -1093,12 +1097,17 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
               const index = typeof tc.index === "number" ? tc.index : 0;
               const frag = rec(tc.function)?.arguments;
               toolArgs.set(index, (toolArgs.get(index) ?? "") + (typeof frag === "string" ? frag : ""));
-              payload++;
+              // Buffered below, not shown: no payload.
             }
           }
-          // Hold nothing but a turn-ending chunk: everything before it is live
-          // output the client is already rendering.
-          if (first?.finish_reason) held.push(o!);
+          // Tool-call deltas are buffered, never streamed live. The client can
+          // only act on a call once its finish chunk arrives, so nothing is lost
+          // by holding them — and holding them is what makes a truncated call
+          // recoverable: if the arguments land incomplete (GLM burns its output
+          // budget on reasoning and reports `finish_reason: "tool_calls"` with
+          // arguments ending mid-string), the client has seen nothing from this
+          // attempt and a silent retry at a lower effort is invisible.
+          if (first?.finish_reason || Array.isArray(dd?.tool_calls)) held.push(o!);
           else res.write(`data: ${sseJson(out)}\n\n`);
         }
       }
@@ -1112,27 +1121,25 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
       if (abort.signal.aborted) void body.cancel().catch(() => undefined);
     }
 
-    // Retryable means "the client has been shown nothing yet": either the whole
-    // budget went to reasoning, or the connection died before any output
-    // arrived. Both discard no visible output, so a silent retry is invisible.
-    // Text OR tool-call deltas count as shown: retrying after a tool call was
-    // written duplicates it at the same index, and the OpenAI client merges the
-    // two argument strings into invalid JSON.
+    // Retryable means "the client has been shown no text yet": either the whole
+    // budget went to reasoning, a truncated tool call was held back, or the
+    // connection died before any output arrived. Tool-call deltas are buffered
+    // above, so a truncated call discards nothing the client saw; retrying after
+    // *text* was written would duplicate it, hence the payload check.
     const starved = !failure && cutOff && payload === 0;
     // A client that hung up is not a failed turn: retrying would bill a second
     // full prompt to an audience that is gone (measured: 2 upstream requests
     // after one abort).
-    const retryable = !abort.signal.aborted && (starved || (failure !== undefined && payload === 0));
-    if (retryable) return { starved, failure, body, retryable };
-    // A tool call cut off by the output budget ends with `finish_reason:
-    // "tool_calls"` — NOT "length" — so nothing above notices it. Measured on
-    // GLM 5.3 Flash at max_tokens 16384: a 6000-line write_file call returns
-    // 16384/16384 completion tokens, `finish_reason: "tool_calls"`, and an
-    // arguments string that ends mid-string. Handing that to the agent makes it
-    // either fail to parse or, worse, write a silently truncated file. Report
-    // it so the turn is retried with a smaller edit instead of landing corrupt.
-    const broken = [...toolArgs.entries()].find(([, args]) => args.trim() !== "" && !isCompleteJson(args));
-    if (!failure && broken) {
+    const broken = !failure ? brokenToolCall(toolArgs) : undefined;
+    const retryable = !abort.signal.aborted && (starved || broken !== undefined || (failure !== undefined && payload === 0));
+    if (retryable) return { starved, failure, body, retryable, truncatedCall: broken };
+    // A tool call cut off mid-value is unusable: GLM reports it with
+    // `finish_reason: "tool_calls"` (not "length"), so the budget check cannot
+    // catch it — measured at a small max_tokens: 57 chars of arguments, a clean
+    // `finish_reason: "tool_calls"`, and JSON ending mid-string. Forwarding it
+    // makes the agent parse-fail or write a truncated file, so drop the call
+    // and its finish and say what happened.
+    if (broken) {
       const [index, args] = broken;
       held.length = 0; // never forward the call *or* its finish; both are unusable
       failure =
@@ -1165,6 +1172,7 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
     // fail again, and the first error is the honest one.
     if (retried.failure && !retried.starved) { outcome = retried; break; }
     outcome = retried;
+    if (!outcome.retryable) break;
   }
   res.off("close", onClose);
 
@@ -1175,6 +1183,15 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
       outcome.failure =
         "the model exhausted max_tokens on reasoning before writing any answer; " +
         "lower the thinking level";
+    }
+    // Every rung truncated the tool call: the buffer was never flushed, so the
+    // client is holding nothing — report the truncation instead of ending with
+    // a bare [DONE], which the client would accept as an empty reply.
+    if (outcome.retryable && outcome.truncatedCall) {
+      outcome.failure =
+        `tool call ${outcome.truncatedCall.index} was cut off by max_tokens after ${outcome.truncatedCall.args.length} characters of arguments` +
+        "; ask for a smaller edit or raise max_tokens";
+      outcome.retryable = false;
     }
     const failure = outcome.failure;
     if (failure) {

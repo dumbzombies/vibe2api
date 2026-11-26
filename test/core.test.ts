@@ -958,23 +958,28 @@ describe("tool calls: no duplicate on retry, no silent truncation", () => {
     choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id, type: "function", function: { name: "write_file", arguments: `{"path":"${path}"` } }] }, finish_reason: null }],
   });
 
-  test("a reset after a tool-call delta is reported, not retried", async () => {
+  test("a reset after a buffered tool-call delta is retried silently", async () => {
     const { efforts, events } = await drive(() =>
       stream([callDelta("call_A", "first.js")], (c) => setTimeout(() => c.error(new Error("socket hang up")), 10)));
-    expect(efforts).toEqual(["high"]);
+    // Tool-call deltas are buffered, never streamed: the reset discarded
+    // nothing the client saw, so the ladder walk is invisible.
+    expect(efforts).toEqual(["high", "low"]);
     expect(events.some((e) => e.choices?.[0]?.finish_reason === "incomplete_reasoning")).toBe(true);
-    const deltas = events.flatMap((e) => e.choices?.[0]?.delta?.tool_calls ?? []);
-    expect(deltas).toHaveLength(1);
-    expect(deltas[0].id).toBe("call_A");
+    // No partial call and no duplicate at the same index ever reach the client.
+    expect(events.flatMap((e) => e.choices?.[0]?.delta?.tool_calls ?? [])).toHaveLength(0);
   });
 
-  test("a truncated tool call is reported instead of finishing as tool_calls", async () => {
-    const { events } = await drive(() => stream([
+  test("a truncated tool call is retried at a lower effort before failing", async () => {
+    const { efforts, events } = await drive(() => stream([
       callDelta("call_T", "big.js"),
       { id: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'function f(){ ret' } }] }, finish_reason: null }] },
       { id: "m", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 197, completion_tokens: 16384 } },
     ]));
+    // Held back, so the walk retried at `low`; the upstream keeps truncating
+    // and the turn finally fails with the truncation reported.
+    expect(efforts).toEqual(["high", "low"]);
     expect(events.some((e) => e.choices?.[0]?.finish_reason === "tool_calls")).toBe(false);
+    expect(events.flatMap((e) => e.choices?.[0]?.delta?.tool_calls ?? [])).toHaveLength(0);
     expect(events.find((e) => e.error)?.error?.message).toContain("cut off by max_tokens");
   });
 
