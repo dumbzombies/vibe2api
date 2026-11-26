@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# Install the Mistral Vibe model-provider plugin into a Hermes home.
+# Install the Mistral Vibe model-provider plugin into Hermes.
 #
 #   ./install.sh                         # current host ($HERMES_HOME or ~/.hermes)
-#   ./install.sh --remote user@host      # copy over ssh and write the key there
-#   ./install.sh --key mstrl_…           # use this key instead of the local pool
-#   ./install.sh --container NAME        # docker container whose HERMES_HOME it writes
+#   ./install.sh --remote user@host      # over ssh; writes the key there
+#   ./install.sh --container NAME        # docker container; reads its HERMES_HOME
+#   ./install.sh --key mstrl_…           # key to write instead of the local pool
+#   MISTRAL_VIBE_HERMES_SOURCE=…         # install another source (fork, pin, local dir)
 #
-# The plugin is self-contained: it runs its own loopback server inside the
-# Hermes process and calls api.mistral.ai directly, so there is no proxy, no
-# Worker and no extra daemon to deploy. Only a Vibe key is needed.
+# The plugin is a real Hermes plugin package from
+# https://github.com/dumbzombies/mistral-vibe-hermes: `hermes plugins install`
+# owns cloning, updates and removal, and the plugin runs its own loopback server
+# inside the Hermes process. No proxy, no Worker, no daemon.
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/../../install/lib.sh"
+
+src="${MISTRAL_VIBE_HERMES_SOURCE:-dumbzombies/mistral-vibe-hermes}"
 
 home_dir="${HERMES_HOME:-$HOME/.hermes}"
 remote=""; container=""; key=""
@@ -45,11 +49,22 @@ PY
 }
 write_env() { write_env_py | python3 - "$1" "$2"; }
 
-files=(__init__.py plugin.yaml README.md)
+# `hermes plugins remove` leaves nothing behind, but an older copy of this repo's
+# installer wrote the provider straight into model-providers/. Both locations load,
+# so the provider would register twice and the picker would show it twice.
+drop_loose_copy() {
+  local dir="$1" label="$2"
+  [ -e "$dir/model-providers/mistral-vibe" ] || return 0
+  if [ "$VIBE2API_DRY_RUN" = 1 ]; then
+    note "would remove the loose copy $dir/model-providers/mistral-vibe ($label uses the plugin package)"
+    return 0
+  fi
+  rm -rf "$dir/model-providers/mistral-vibe"
+  note "removed loose copy $dir/model-providers/mistral-vibe (the plugin package replaces it)"
+}
 
 if [ -n "$container" ]; then
   step "installing into container $container"
-  # HERMES_HOME inside the image is /opt/data, not the caller's home.
   target_home=""
   if [ "$VIBE2API_DRY_RUN" = 1 ]; then
     note "would read HERMES_HOME from $container (default /opt/data)"
@@ -58,15 +73,8 @@ if [ -n "$container" ]; then
     target_home="$(docker exec "$container" printenv HERMES_HOME 2>/dev/null || true)"
     [ -n "$target_home" ] || target_home="/opt/data"
   fi
-  plugdir="$target_home/plugins/model-providers/mistral-vibe"
-  do_run docker exec "$container" mkdir -p "$plugdir"
-  for f in "${files[@]}"; do
-    if [ "$VIBE2API_DRY_RUN" = 1 ]; then
-      note "would copy $f -> $container:$plugdir/$f"
-    else
-      docker exec -i "$container" sh -c "cat > '$plugdir/$f'" < "$here/model-providers/mistral-vibe/$f"
-    fi
-  done
+  do_run docker exec "$container" bash -lc "cd '$target_home' && hermes plugins install '$src' --yes-deps --enable"
+  drop_loose_copy "$target_home/plugins" "$container"
   if [ -z "$key" ]; then
     warn "no Vibe key found; set MISTRAL_VIBE_KEY in $target_home/.env in $container"
   elif [ "$VIBE2API_DRY_RUN" = 1 ]; then
@@ -74,17 +82,18 @@ if [ -n "$container" ]; then
   else
     write_env_py | docker exec -i "$container" python3 - "$target_home" "$key"
   fi
-  step "verify: docker exec $container hermes doctor"
+  step "verify: docker exec $container hermes plugins doctor mistral-vibe"
   exit 0
 fi
 
 if [ -n "$remote" ]; then
   step "installing on $remote"
-  do_run ssh "$remote" 'mkdir -p ~/.hermes/plugins/model-providers/mistral-vibe'
-  for f in "${files[@]}"; do
-    do_run scp -q "$here/model-providers/mistral-vibe/$f" \
-      "$remote:~/.hermes/plugins/model-providers/mistral-vibe/$f"
-  done
+  do_run ssh "$remote" "hermes plugins install '$src' --yes-deps --enable"
+  if [ "$VIBE2API_DRY_RUN" = 1 ]; then
+    note "would remove ~/.hermes/plugins/model-providers/mistral-vibe on $remote if present"
+  else
+    ssh "$remote" 'rm -rf ~/.hermes/plugins/model-providers/mistral-vibe' 2>/dev/null || true
+  fi
   if [ -z "$key" ]; then
     warn "no Vibe key found; set MISTRAL_VIBE_KEY in ~/.hermes/.env on $remote"
   elif [ "$VIBE2API_DRY_RUN" = 1 ]; then
@@ -94,15 +103,22 @@ if [ -n "$remote" ]; then
     # or stdin, so shell quoting cannot mangle it.
     write_env_py | ssh "$remote" "python3 - ~/.hermes $(printf '%q' "$key")"
   fi
-  step "verify: ssh $remote 'hermes doctor'"
+  step "verify: ssh $remote 'hermes plugins doctor mistral-vibe'"
   exit 0
 fi
 
-step "plugin -> $home_dir/plugins/model-providers/mistral-vibe"
-for f in "${files[@]}"; do
-  install_file "$here/model-providers/mistral-vibe/$f" "$home_dir/plugins/model-providers/mistral-vibe/$f"
-done
-ok "$home_dir/plugins/model-providers/mistral-vibe"
+step "plugin -> hermes plugins install $src"
+have hermes || die "hermes not found on PATH"
+do_run hermes plugins install "$src" --yes-deps --enable
+if [ "$VIBE2API_DRY_RUN" != 1 ]; then
+  list="$(hermes plugins list 2>&1 || true)"
+  case "$list" in
+    *mistral-vibe*) : ;;
+    *) die "hermes installed the plugin but does not list it; run: hermes plugins doctor mistral-vibe" ;;
+  esac
+  ok "hermes plugins list: mistral-vibe"
+fi
+drop_loose_copy "$home_dir/plugins" hermes
 
 if [ -n "$key" ]; then
   step "credential -> $home_dir/.env"
@@ -117,7 +133,7 @@ fi
 
 step "next"
 cat <<'EOF'
-    hermes doctor                                  # provider appears, /models probe passes
+    hermes plugins list                            # mistral-vibe @ 2.0.0
     hermes usage --provider mistral-vibe           # Vibe month gauge
-    hermes -z "reply OK" --provider mistral-vibe -m zai-glm-5-3-flash
+    hermes -m glm-flash "reply OK"                 # alias for zai-glm-5-3-flash
 EOF

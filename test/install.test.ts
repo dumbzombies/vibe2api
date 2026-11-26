@@ -110,7 +110,7 @@ describe("installers", () => {
     expect(code).toBe(0);
     const conf = JSON.parse(readFileSync(join(cfg, "opencode.jsonc"), "utf8"));
     expect(conf.theme).toBe("dracula");
-    expect(conf.provider["mistral-vibe"].options.baseURL).toBe("http://127.0.0.1:8796/v1");
+    expect(conf.provider["mistral-vibe"].options.baseURL).toBe("http://127.0.0.1:8810/v1");
     expect(existsSync(join(cfg, "plugins", "mistral-vibe.ts"))).toBe(true);
     expect(existsSync(join(cfg, "command", "vibe-quota.md"))).toBe(true);
     const quota = join(scratch, "bin", "vibe-quota");
@@ -127,20 +127,33 @@ describe("installers", () => {
     expect(readFileSync(join(cfg, "opencode.jsonc"), "utf8")).toBe(first);
   }, 30_000);
 
-  test("hermes: writes the key with mode 600 and keeps other env lines", async () => {
+  // Hermes is a real CLI: a machine without it cannot be installed into, so the
+  // case skips rather than failing.
+  const haveHermes = Bun.which("hermes") !== null;
+
+  test.skipIf(!haveHermes)("hermes: registers the plugin and removes the loose copy", async () => {
     const home = join(scratch, "hermes");
-    mkdirSync(home, { recursive: true });
+    // What the old copy-based installer left behind; both locations load, so this
+    // would register the provider twice.
+    mkdirSync(join(home, "plugins", "model-providers", "mistral-vibe"), { recursive: true });
+    writeFileSync(join(home, "plugins", "model-providers", "mistral-vibe", "__init__.py"), "# old copy\n");
     writeFileSync(join(home, ".env"), "SOMETHING_ELSE=1\nMISTRAL_VIBE_KEY=old\n");
 
-    const { code } = await run("install.sh", ["hermes"], { HERMES_HOME: home, MISTRAL_VIBE_KEY: "mstrl_new" });
+    const { code, out } = await run("install.sh", ["hermes"], {
+      HERMES_HOME: home,
+      MISTRAL_VIBE_KEY: "mstrl_new",
+      MISTRAL_VIBE_HERMES_SOURCE: join(ROOT, "plugins", "hermes", "model-providers", "mistral-vibe"),
+    });
     expect(code).toBe(0);
     const env = readFileSync(join(home, ".env"), "utf8");
     expect(env).toContain("MISTRAL_VIBE_KEY=mstrl_new");
+    // The neighbouring var must survive: the rewrite is not a truncate-all.
     expect(env).toContain("SOMETHING_ELSE=1");
     expect(env.match(/MISTRAL_VIBE_KEY=/g)?.length).toBe(1);
     expect(statSync(join(home, ".env")).mode & 0o777).toBe(0o600);
-    expect(existsSync(join(home, "plugins", "model-providers", "mistral-vibe", "__init__.py"))).toBe(true);
-  }, 30_000);
+    expect(existsSync(join(home, "plugins", "model-providers", "mistral-vibe"))).toBe(false);
+    expect(out).toContain("removed loose copy");
+  }, 120_000);
 
   test("--dry-run performs no writes", async () => {
     const home = join(scratch, "dry");
