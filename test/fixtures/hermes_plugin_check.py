@@ -238,6 +238,22 @@ def main() -> int:
     check("stream carries reasoning deltas", reasoning == "why", repr(reasoning))
     check("stream terminates with [DONE]", done)
 
+    # -- picker rows: ids unchanged, human names alongside --
+    rows = module.MistralVibeProfile.discover_models(module.MistralVibeProfile.__new__(module.MistralVibeProfile))
+    by_id = {row["id"]: row for row in rows or []}
+    check("picker lists every model", set(by_id) == set(module.MODELS), str(by_id))
+    check(
+        "labels match omp's names",
+        by_id["zai-glm-5-3-flash"]["label"] == "GLM 5.3 Flash (Vibe)"
+        and by_id["mistral-medium-latest"]["label"] == "Mistral Medium (Vibe)",
+    )
+    check("every row carries a note", all(row.get("note") for row in rows or []))
+    profile = module.MistralVibeProfile(
+        name="mistral-vibe", fallback_models=module.MODELS, default_max_tokens=8192,
+        model_capabilities={}, model_aliases={},
+    )
+    check("per-model output cap", profile.get_max_tokens("zai-glm-5-3-flash") == 16384, str(profile.get_max_tokens("zai-glm-5-3-flash")))
+
     # -- usage hook reads the Vibe block, not the API one --
     usage = module.MistralVibeProfile.fetch_account_usage(
         types.SimpleNamespace(name="mistral-vibe"), api_key="mstrl_test"

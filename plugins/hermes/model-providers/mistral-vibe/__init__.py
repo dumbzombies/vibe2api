@@ -47,6 +47,41 @@ MODELS = (
 CONTEXT_WINDOW = {
     "mistral-medium-latest": 262144,
 }
+MAX_TOKENS = {
+    "zai-glm-5-3": 32768,
+    "zai-glm-5-3-flash": 16384,
+    "deepseek-v4-1-flash-1017": 32768,
+    "mistral-large-4-0": 32768,
+    "mistral-medium-latest": 32768,
+}
+# Same names omp shows in its /model picker, so one model reads the same in both
+# agents. Hermes keeps the wire id selectable and puts this beside it as a note;
+# renaming the id would change what reaches the API.
+MODEL_LABELS = {
+    "zai-glm-5-3": "GLM 5.3 (Vibe)",
+    "zai-glm-5-3-flash": "GLM 5.3 Flash (Vibe)",
+    "deepseek-v4-1-flash-1017": "DeepSeek V4.1 Flash (Vibe)",
+    "mistral-large-4-0": "Mistral Large 4 (Vibe)",
+    "mistral-medium-latest": "Mistral Medium (Vibe)",
+}
+MODEL_SPECS = {
+    "zai-glm-5-3": "1M ctx, reasoning",
+    "zai-glm-5-3-flash": "1M ctx, reasoning, vision",
+    "deepseek-v4-1-flash-1017": "1M ctx, reasoning, vision",
+    "mistral-large-4-0": "1M ctx, reasoning, vision",
+    "mistral-medium-latest": "256k ctx, reasoning, vision",
+}
+
+
+def model_note(model: str) -> str:
+    """The dim text beside a picker row.
+
+    Hermes renders `id · note` and offers no other label slot, so the friendly
+    name lives here; the wire id stays untouched.
+    """
+    label = MODEL_LABELS.get(model, model)
+    specs = MODEL_SPECS.get(model, "")
+    return f"{label} · {specs}" if specs else label
 
 # What each model accepts on the wire. Measured on the live endpoint: any level
 # outside a model's set fails the whole turn with 422, so everything is mapped.
@@ -390,6 +425,21 @@ class _Server:
 
 
 class MistralVibeProfile(ProviderProfile):
+    def discover_models(self, **kwargs: Any) -> list[dict[str, Any]] | None:
+        """Annotated picker rows: the wire id stays the id, the note carries the name.
+
+        Hermes renders `id` as the selectable value and `note` dim beside it, which is
+        where a human-readable name belongs — rewriting the id would change what goes
+        on the wire and break model routing.
+        """
+        return [
+            {"id": model, "label": MODEL_LABELS.get(model, model), "note": model_note(model)}
+            for model in MODELS
+        ]
+
+    def get_max_tokens(self, model: str | None) -> int | None:
+        return MAX_TOKENS.get(str(model or ""), self.default_max_tokens)
+
     def create_client(self, **client_kwargs: Any) -> Any:
         """Point the shared OpenAI client at this process's own loopback server.
 
@@ -465,7 +515,7 @@ register_provider(
         name="mistral-vibe",
         aliases=("mistral-vibe-direct", "vibe"),
         display_name="Mistral Vibe",
-        description="Mistral models on the Vibe allowance (Vibe user agent + call_source, in-process)",
+        description="Mistral Vibe — $300/month Vibe allowance",
         signup_url="https://chat.mistral.ai/code",
         env_vars=("MISTRAL_VIBE_KEY",),
         base_url=f"{DEFAULT_UPSTREAM}/v1",
@@ -473,6 +523,16 @@ register_provider(
         api_mode="chat_completions",
         default_aux_model="zai-glm-5-3-flash",
         fallback_models=MODELS,
+        # Short names, resolved before core guessing; keeps `/model glm-flash` working
+        # like omp's fuzzy `--model glm-flash`.
+        model_aliases={
+            "glm": "zai-glm-5-3",
+            "glm-flash": "zai-glm-5-3-flash",
+            "deepseek": "deepseek-v4-1-flash-1017",
+            "deepseek-flash": "deepseek-v4-1-flash-1017",
+            "large": "mistral-large-4-0",
+            "medium": "mistral-medium-latest",
+        },
         default_headers={"User-Agent": _vibe_ua()},
         model_capabilities={
             model: {
