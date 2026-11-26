@@ -1,9 +1,20 @@
-// Mistral Vibe for omp — fully self-contained.
+// Mistral Vibe for omp — one daemon per user, plugins are pure clients.
 //
-// Same shape as freepi-plugin: the extension binds its own OpenAI-compatible
-// server on loopback inside this process and points the provider at it. No
-// Cloudflare Worker, no `bun src/server.js`, nothing else to start. Quit omp
-// and the server goes with it.
+// `ensureDaemon()` owns the lifecycle: read `~/.mistral-vibe/omp-server.json`
+// → `GET /healthz` → reuse; if nothing answers, spawn the same extension file
+// detached (`MISTRAL_VIBE_DAEMON=1 bun <this file>`) and wait for the
+// handshake. The provider then points at that exact port.
+//
+// Why a daemon rather than a server per omp process: several omp copies used to
+// bind 8790, 8791, … and each held its own catalog cache, budget cache, key
+// cooldown table and request stats, so quota reads disagreed with each other
+// and an upward probe silently pointed a host at somebody else's port. Now one
+// process owns the port and the state; `/healthz` reports `service`, and a
+// client that finds a different service on the port refuses to adopt it.
+//
+// `MISTRAL_VIBE_NO_DAEMON=1` keeps the old in-process behaviour (tests bind a
+// throwaway port directly). `MISTRAL_VIBE_DAEMON=1` forces daemon mode even
+// when the module was imported by a host.
 //
 // What it does that a plain baseUrl cannot:
 //   - sends the Vibe User-Agent and `metadata.call_source`, so spend lands on
@@ -20,9 +31,11 @@
 // server reads it per request (credentialKeys()), so login works mid-session.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ---------- constants ----------
 
@@ -36,6 +49,17 @@ function agentAuthFiles(): string[] {
   return [join(agentDir, "auth.json"), join(homedir(), ".config", "opencode", "auth", "auth.json")];
 }
 const PORT = Number(process.env.MISTRAL_VIBE_PORT ?? 8790);
+const SERVICE = "mistral-vibe-omp";
+const STATE_DIR = process.env.MISTRAL_VIBE_STATE_DIR ?? join(homedir(), ".mistral-vibe");
+const STATE_FILE = join(STATE_DIR, "omp-server.json");
+/** The port this process actually bound (the daemon may step past a taken one). */
+let listeningPort = PORT;
+const LOCK_FILE = join(STATE_DIR, "omp-server.lock");
+const ERROR_LOG = join(STATE_DIR, "omp-errors.log");
+const ERROR_LOG_MAX = 262144;
+// A lock older than this belongs to a crashed spawn, not a live one.
+const LOCK_STALE_MS = 30_000;
+const START_TIMEOUT_MS = 20_000;
 const PORT_ATTEMPTS = 10;
 const CATALOG_TTL_MS = 10 * 60 * 1000;
 const BUDGET_TTL_MS = 60 * 1000;
@@ -177,18 +201,10 @@ function nextKey(requestToken?: string): string | undefined {
 // Vibe returns typed parts: {type:"text"} plus
 // {type:"thinking", thinking:[{type:"text"}]}. OpenAI clients want the text
 // inline and the reasoning in a separate `reasoning_content` string.
-// Fragments of one answer, so they concatenate — `deltaText` (the streaming
-// path) already joins with "". Joining with "\n" here would inject newlines the
-// model never wrote whenever upstream splits an answer into several text parts.
+// Fragments of one answer, so they concatenate with "". Joining with "\n" would
+// inject newlines the model never wrote whenever upstream splits an answer into
+// several text parts.
 function textParts(content: unknown): string {
-  if (!Array.isArray(content)) return typeof content === "string" ? content : "";
-  return content
-    .filter((p) => rec(p)?.type === "text" && typeof rec(p)?.text === "string")
-    .map((p) => String(rec(p)?.text))
-    .join("");
-}
-
-function deltaText(content: unknown): string {
   if (!Array.isArray(content)) return typeof content === "string" ? content : "";
   return content
     .filter((p) => rec(p)?.type === "text" && typeof rec(p)?.text === "string")
@@ -223,6 +239,7 @@ function reasoningText(content: unknown): string {
 //   mistral-medium-latest    none high
 const GLM_EFFORT: Record<string, string> = {
   off: "low",
+  none: "low",
   minimal: "low",
   low: "low",
   // `medium` is not accepted; route to low. Routing it to high is what made
@@ -274,8 +291,21 @@ function mapReasoning(effort: unknown, model: unknown): string | undefined {
   // or "toString" would otherwise resolve to an Object.prototype member and turn
   // reasoning_effort into an inherited value (or `{}`).
   const table = Object.hasOwn(REASONING_EFFORTS, String(model)) ? REASONING_EFFORTS[String(model)] : undefined;
-  const mapped = table && Object.hasOwn(table, String(effort)) ? table[String(effort)] : undefined;
-  return typeof mapped === "string" ? mapped : String(effort);
+  // Unlisted model: nothing to clamp against, so the client's value stands.
+  if (!table) return String(effort);
+  if (Object.hasOwn(table, String(effort))) return table[String(effort)];
+  // A level the model does not accept must never reach Mistral verbatim: any
+  // string outside {none,minimal,low,medium,high,xhigh,max} is a 422 for the
+  // whole turn (measured: `off`, `true`, `default`). Floor to the weakest wire
+  // level instead — reasoning tokens are billed against max_tokens, so the
+  // cheapest level is the safe direction.
+  return weakestEffort(table);
+}
+
+/** The lowest-cost wire level in a clamp table. */
+function weakestEffort(table: Record<string, string>): string {
+  const wire = [...new Set(Object.values(table))];
+  return wire.sort((a, b) => (EFFORT_RANK[a] ?? 0) - (EFFORT_RANK[b] ?? 0))[0];
 }
 
 // Fields OpenAI clients send that Mistral rejects (422), plus the newer
@@ -359,7 +389,7 @@ function normalizeResponse(data0: unknown): unknown {
     const delta = rec(choice.delta);
     if (delta && Array.isArray(delta.content)) {
       const reasoning = reasoningText(delta.content);
-      delta.content = deltaText(delta.content);
+      delta.content = textParts(delta.content);
       if (reasoning) delta.reasoning_content = reasoning;
     }
   }
@@ -429,22 +459,47 @@ function sseJson(value: unknown): string {
 /** No `data:` line for this long means the upstream has stalled, not thought. */
 const STREAM_IDLE_MS = Number(process.env.MV_STREAM_IDLE_MS ?? 300_000);
 
-/** Resolve the read, or cancel it and throw once `ms` elapses with no bytes. */
+/**
+ * Resolve the read, or cancel it and throw once `ms` elapses with no bytes, or
+ * as soon as `signal` aborts.
+ *
+ * The signal is raced here rather than only checked between iterations: a
+ * thinking model can stay silent for minutes, and without the race a client
+ * that hung up left the upstream request (and its billing) running until the
+ * next byte arrived — measured: still open 8 s after the abort with a 300 s
+ * idle budget.
+ */
 function idle<T>(
   read: Promise<T>,
   ms: number,
   reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal?: AbortSignal,
 ): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      void reader.cancel().catch(() => undefined);
-      reject(new Error(`upstream stream idle for ${Math.round(ms / 1000)}s`));
-    }, ms);
-    read.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); },
-    );
-  });
+  const { promise, resolve, reject } = Promise.withResolvers<T>();
+  const stop = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  };
+  const onAbort = () => {
+    stop();
+    void reader.cancel().catch(() => undefined);
+    reject(new Error("client disconnected"));
+  };
+  const timer = setTimeout(() => {
+    stop();
+    void reader.cancel().catch(() => undefined);
+    reject(new Error(`upstream stream idle for ${Math.round(ms / 1000)}s`));
+  }, ms);
+  if (signal?.aborted) {
+    onAbort();
+    return promise;
+  }
+  signal?.addEventListener("abort", onAbort, { once: true });
+  read.then(
+    (v) => { stop(); resolve(v); },
+    (e) => { stop(); reject(e); },
+  );
+  return promise;
 }
 
 async function* sseEvents(body: ReadableStream<Uint8Array>, signal?: AbortSignal): AsyncGenerator<Rec> {
@@ -473,6 +528,7 @@ async function* sseEvents(body: ReadableStream<Uint8Array>, signal?: AbortSignal
       reader.read(),
       STREAM_IDLE_MS,
       reader,
+      signal,
     );
     if (done) break;
     buf += dec.decode(value, { stream: true });
@@ -520,11 +576,12 @@ type UpstreamResult =
 
 /** Status of the most recent auth rejection, so the error can be accurate. */
 let lastAuthStatus: number | undefined;
-function cacheLastAuthStatus(): number | undefined {
-  return lastAuthStatus;
-}
 
 async function upstreamChat(body: Rec, stream: boolean, token?: string): Promise<UpstreamResult> {
+  // Nothing to authenticate with at all. Reporting this as `auth-failed` below
+  // told the user to re-run /login and blamed a key that does not exist, while
+  // the actual fix (supply one) was hidden in an unreachable branch.
+  if (!configuredKeys(token).length) return { kind: "no-key" };
   const pool = keyPool(token).length;
   const attempts = Math.max(pool, 1) * (pool <= 1 ? MAX_ATTEMPTS : 1);
   let lastStatus = 0;
@@ -561,13 +618,17 @@ async function upstreamChat(body: Rec, stream: boolean, token?: string): Promise
       lastAuthStatus = res.status;
       authFailed = true;
       cooldown.set(key, Date.now() + COOLDOWN_MS);
+    } else if (res.status === 429) {
+      capacityLimited = true;
+    } else {
+      // 5xx: an upstream fault, retried above, never attributable to the key.
+      transient = true;
     }
-    else capacityLimited = true;
   }
   if (networkError) return { kind: "network", error: networkError };
   if (!lastStatus) {
     // Every configured key is cooling down from an auth failure.
-    return { kind: "auth-failed", status: cacheLastAuthStatus() ?? 401 };
+    return { kind: "auth-failed", status: lastAuthStatus ?? 401 };
   }
   if (capacityLimited && lastStatus === 429) return { kind: "capacity", retryAfter: "60" };
   if (authFailed) return { kind: "auth-failed", status: lastStatus };
@@ -653,7 +714,10 @@ async function loadCatalog(token?: string): Promise<CatalogModel[]> {
       /* try the next catalog shape */
     }
   }
-  if (!models?.length) models = FALLBACK_MODELS.map((m) => catalogEntry(m.id, { context: m.context }));
+  // A keyless load must not be cached: the daemon warms the catalog at bind
+  // time, often before /login, and a 10-minute cache of FALLBACK_MODELS would
+  // then hide every real model (63 upstream) for the first logged-in client.
+  if (!models?.length) return FALLBACK_MODELS.map((m) => catalogEntry(m.id, { context: m.context }));
   catalog = { models, at: Date.now() };
   return models;
 }
@@ -792,6 +856,7 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
   }
   if (result.kind === "transient") {
     stats.errors++;
+    logUpstreamError(result.status, String(body.model ?? ""), body.reasoning_effort, result.body);
     return sendError(res, result.status, "Mistral returned a temporary error; retry shortly", { upstream_body: result.body });
   }
   if (result.kind === "capacity") {
@@ -807,6 +872,7 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
   if (!upstream.ok) {
     stats.errors++;
     const text = (await upstream.text()).slice(0, 2048);
+    logUpstreamError(upstream.status, String(body.model ?? ""), body.reasoning_effort, text);
     return sendError(res, upstream.status, "upstream error", {
       upstream_status: upstream.status,
       upstream_body: text,
@@ -1053,7 +1119,10 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
     // written duplicates it at the same index, and the OpenAI client merges the
     // two argument strings into invalid JSON.
     const starved = !failure && cutOff && payload === 0;
-    const retryable = starved || (failure !== undefined && payload === 0);
+    // A client that hung up is not a failed turn: retrying would bill a second
+    // full prompt to an audience that is gone (measured: 2 upstream requests
+    // after one abort).
+    const retryable = !abort.signal.aborted && (starved || (failure !== undefined && payload === 0));
     if (retryable) return { starved, failure, body, retryable };
     // A tool call cut off by the output budget ends with `finish_reason:
     // "tool_calls"` — NOT "length" — so nothing above notices it. Measured on
@@ -1133,6 +1202,14 @@ async function handleCompletions(req: IncomingMessage, res: ServerResponse, toke
   }
 }
 
+// A host in daemon mode never binds — it only talks to the child — so this
+// label is accurate for whichever process actually serves the route.
+function serverMode(): "daemon" | "in-process" {
+  return process.env.MISTRAL_VIBE_DAEMON === "1" && process.env.MISTRAL_VIBE_NO_DAEMON !== "1"
+    ? "daemon"
+    : "in-process";
+}
+
 function createHandler(): (req: IncomingMessage, res: ServerResponse) => void {
   return (req, res) => {
     void (async () => {
@@ -1156,8 +1233,26 @@ function createHandler(): (req: IncomingMessage, res: ServerResponse) => void {
           });
           return res.end();
         }
+        if (path === "/healthz") {
+          // Liveness only: this is the handshake every host polls with a 0.8–1.5 s
+          // timeout, so it must never touch the network. Awaiting loadCatalog()
+          // here made the probe hang for as long as the upstream took to answer
+          // /v1/models, so a host gave up after START_TIMEOUT_MS and refused to
+          // start while the daemon was perfectly healthy (measured: 8 s catalog →
+          // "daemon did not answer within 20s"). The catalog size is reported
+          // only once it is already cached.
+          return sendJson(res, 200, {
+            ok: true,
+            service: SERVICE,
+            port: listeningPort,
+            pid: process.pid,
+            startedAt: stats.startedAt,
+            user_agent: userAgent(),
+            models: catalog?.models.length ?? null,
+          });
+        }
         if (path === "/health") {
-          return sendJson(res, 200, { ok: true, mode: "in-process", user_agent: userAgent() });
+          return sendJson(res, 200, { ok: true, mode: serverMode(), user_agent: userAgent() });
         }
         if (path === "/v1/models") {
           return sendJson(res, 200, { object: "list", data: await loadCatalog(token) });
@@ -1165,7 +1260,7 @@ function createHandler(): (req: IncomingMessage, res: ServerResponse) => void {
         if (path === "/api/state") {
           return sendJson(res, 200, {
             ok: true,
-            mode: "in-process",
+            mode: serverMode(),
             user_agent: userAgent(),
             uptime_s: Math.round((Date.now() - stats.startedAt) / 1000),
             // Fingerprints only: the raw keys are bearer secrets and this
@@ -1204,42 +1299,254 @@ function createHandler(): (req: IncomingMessage, res: ServerResponse) => void {
 
 export interface RunningServer {
   url: string;
+  port: number;
   close(): Promise<void>;
 }
 
-/** Bind loopback, probing upward when the preferred port is taken. */
-async function startServer(): Promise<RunningServer> {
+type StateFile = { service: string; port: number; pid: number; startedAt: number };
+
+function readState(): StateFile | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(STATE_FILE, "utf8")) as Partial<StateFile>;
+    if (typeof raw.port === "number" && raw.port > 0) {
+      return { service: String(raw.service ?? ""), port: raw.port, pid: Number(raw.pid ?? 0), startedAt: Number(raw.startedAt ?? 0) };
+    }
+  } catch {
+    // Missing or torn file: nothing to reuse.
+  }
+  return undefined;
+}
+
+function writeState(state: StateFile): void {
+  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  const tmp = `${STATE_FILE}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
+  renameSync(tmp, STATE_FILE);
+}
+
+function clearState(pid: number): void {
+  const state = readState();
+  // Another daemon may have replaced ours; only remove our own record.
+  if (state && state.pid !== pid) return;
+  rmSync(STATE_FILE, { force: true });
+}
+
+/**
+ * Record an upstream rejection. `openai` clients surface only status + a short
+ * message, so without this the reason a body was refused (the 422 class) is
+ * invisible. Never logs the API key or the request messages.
+ */
+function logUpstreamError(status: number, model: string, effort: unknown, detail: string): void {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+    if ((statSync(ERROR_LOG, { throwIfNoEntry: false })?.size ?? 0) > ERROR_LOG_MAX) {
+      renameSync(ERROR_LOG, `${ERROR_LOG}.1`);
+    }
+    appendFileSync(
+      ERROR_LOG,
+      `${JSON.stringify({ ts: Date.now(), status, model, effort: typeof effort === "string" ? effort : null, detail: detail.slice(0, 2000) })}\n`,
+    );
+  } catch {
+    // Diagnostics must never break a request.
+  }
+}
+
+type Handshake = { ok?: boolean; service?: string; pid?: number; startedAt?: number; port?: number };
+
+/** GET /healthz from a specific port; undefined when nothing answers. */
+async function healthz(port: number, timeoutMs = 1500): Promise<Handshake | undefined> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return undefined;
+    return (await res.json()) as Handshake;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Bind exactly `port`. No probing: a fixed baseURL must never drift. */
+async function bindServer(port: number): Promise<RunningServer> {
   const handler = createHandler();
-  let lastError: unknown;
-  for (let i = 0; i < PORT_ATTEMPTS; i++) {
-    const port = PORT + i;
-    const server: Server = createServer(handler);
-    const bind = Promise.withResolvers<boolean>();
-    const onError = (err: NodeJS.ErrnoException) => {
-      server.removeListener("listening", onListening);
-      lastError = err;
-      bind.resolve(false);
-    };
-    const onListening = () => {
-      server.removeListener("error", onError);
-      bind.resolve(true);
-    };
-    server.once("error", onError);
-    server.once("listening", onListening);
-    server.listen(port, "127.0.0.1");
-    if (!(await bind.promise)) continue;
-    // Warm the catalog now so the first request does not pay for it.
-    void loadCatalog().catch(() => undefined);
-    return {
-      url: `http://127.0.0.1:${port}/v1`,
-      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
-    };
+  const server: Server = createServer(handler);
+  const bound = Promise.withResolvers<void>();
+  const onError = (err: NodeJS.ErrnoException) => bound.reject(err);
+  server.once("error", onError);
+  server.listen(port, "127.0.0.1", () => {
+    server.removeListener("error", onError);
+    bound.resolve();
+  });
+  await bound.promise;
+  listeningPort = port;
+  // Warm the catalog now so the first request does not pay for it.
+  void loadCatalog().catch(() => undefined);
+  return {
+    url: `http://127.0.0.1:${port}/v1`,
+    port,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+/** A lock left behind by a crashed spawn must not wedge every future start. */
+function takeLock(): boolean {
+  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  try {
+    writeFileSync(LOCK_FILE, String(process.pid), { flag: "wx", mode: 0o600 });
+    return true;
+  } catch {
+    try {
+      const stat = statSync(LOCK_FILE);
+      if (Date.now() - stat.mtimeMs <= LOCK_STALE_MS) return false;
+      rmSync(LOCK_FILE, { force: true });
+    } catch {
+      return false;
+    }
+  }
+  try {
+    writeFileSync(LOCK_FILE, String(process.pid), { flag: "wx", mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Release only a lock this process owns. A stale lock that another spawn has
+ * already taken over belongs to that spawn now; removing it unconditionally let
+ * two daemons race the same port and state file.
+ */
+function releaseLock(): void {
+  try {
+    if (readFileSync(LOCK_FILE, "utf8").trim() !== String(process.pid)) return;
+  } catch {
+    return; // already gone
+  }
+  rmSync(LOCK_FILE, { force: true });
+}
+
+/**
+ * A JavaScript runtime that can execute this `.ts` file, or `undefined`.
+ *
+ * `process.execPath` is NOT it: Termux's omp launcher execs
+ * `$PREFIX/libexec/omp/omp.bin`, so `spawn(execPath, [extension])` starts a
+ * whole agent session with the extension path as its prompt — it prints
+ * "Working…" into the daemon log, never serves the port, and dies with the
+ * session. Worse, that session loads this same extension, which spawns another
+ * session: an unbounded spawn chain that fights every other plugin for ports.
+ *
+ * Bun runs TypeScript natively; node needs `--experimental-strip-types`.
+ */
+function resolveRuntime(): { command: string; prefix: string[] } | undefined {
+  const override = process.env.MISTRAL_VIBE_RUNTIME;
+  const dirs = (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":");
+  const find = (name: string): string | undefined => {
+    for (const dir of dirs) {
+      if (!dir) continue;
+      try {
+        const candidate = join(dir, name);
+        if (statSync(candidate).isFile()) return candidate;
+      } catch {
+        // not in this dir
+      }
+    }
+    return undefined;
+  };
+  if (override) return { command: override, prefix: [] };
+  const bun = find(process.platform === "win32" ? "bun.exe" : "bun");
+  if (bun) return { command: bun, prefix: [] };
+  const node = find(process.platform === "win32" ? "node.exe" : "node");
+  if (node) return { command: node, prefix: ["--experimental-strip-types"] };
+  return undefined;
+}
+
+const NO_RUNTIME =
+  "no bun or node on PATH to run the mistral-vibe daemon; install bun or set MISTRAL_VIBE_RUNTIME";
+
+/** Spawn this extension file as the detached daemon. */
+function spawnDaemon(): void {
+  const script = fileURLToPath(import.meta.url);
+  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  const logFd = openSync(join(STATE_DIR, "omp-server.log"), "a", 0o600);
+  const env: NodeJS.ProcessEnv = { ...process.env, MISTRAL_VIBE_DAEMON: "1", MISTRAL_VIBE_NO_DAEMON: "0" };
+  // The child is a bare runtime, not an agent host: drop the agent launcher's
+  // own variables so they cannot reshape it into one.
+  delete env.OMP_BIN_NAME;
+  delete env.OMP_PACKAGE_DIR;
+  delete env.OMP_MANAGED_INSTALL;
+  const runtime = resolveRuntime();
+  if (!runtime) throw new Error(NO_RUNTIME);
+  const child = spawn(runtime.command, [...runtime.prefix, script], {
+    detached: true,
+    cwd: STATE_DIR,
+    stdio: ["ignore", logFd, logFd],
+    env,
+  });
+  child.unref();
+}
+
+async function waitForHandshake(): Promise<RunningServer> {
+  const deadline = Date.now() + START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const state = readState();
+    if (state && state.service === SERVICE) {
+      const ready = await healthz(state.port, 800);
+      if (ready?.service === SERVICE) {
+        return {
+          url: `http://127.0.0.1:${state.port}/v1`,
+          port: state.port,
+          close: async () => undefined, // the daemon outlives this host on purpose
+        };
+      }
+    }
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  const log = join(STATE_DIR, "omp-server.log");
+  let tail = "";
+  try {
+    tail = readFileSync(log, "utf8").trimEnd().split("\n").slice(-5).map((l) => l.slice(0, 200)).join("\n");
+  } catch {
+    // No log yet: the spawn never got that far.
   }
   throw new Error(
-    `mistral-vibe: no free port in ${PORT}-${PORT + PORT_ATTEMPTS - 1}: ${
-      lastError instanceof Error ? lastError.message : String(lastError)
-    }`,
+    `mistral-vibe: daemon did not answer on 127.0.0.1 within ${START_TIMEOUT_MS / 1000}s (log: ${log})` +
+      (tail ? `\n${tail}` : ""),
   );
+}
+
+/** Reuse the live daemon, or start one. Never probes upward. */
+async function ensureDaemon(): Promise<RunningServer> {
+  const state = readState();
+  if (state) {
+    const ready = await healthz(state.port);
+    if (ready?.service === SERVICE) {
+      return { url: `http://127.0.0.1:${state.port}/v1`, port: state.port, close: async () => undefined };
+    }
+    if (ready && ready.service !== SERVICE) {
+      throw new Error(
+        `mistral-vibe: 127.0.0.1:${state.port} answers as service "${ready.service ?? "unknown"}", not "${SERVICE}"; ` +
+          `refusing to adopt it (stale ${STATE_FILE}?)`,
+      );
+    }
+  }
+  if (!takeLock()) return waitForHandshake();
+  try {
+    const again = readState();
+    if (again) {
+      const ready = await healthz(again.port);
+      if (ready?.service === SERVICE) {
+        return { url: `http://127.0.0.1:${again.port}/v1`, port: again.port, close: async () => undefined };
+      }
+    }
+    spawnDaemon();
+    return await waitForHandshake();
+  } finally {
+    releaseLock();
+  }
+}
+
+/** Used when daemon mode is disabled (tests, smoke probes). */
+function ensureInProcess(): Promise<RunningServer> {
+  running ??= bindServer(PORT);
+  return running;
 }
 
 // ---------- quota rendering ----------
@@ -1361,13 +1668,14 @@ let providerForm: "oauth" | "unknown" = "unknown";
 
 let running: Promise<RunningServer> | null = null;
 
-function ensureServer(): Promise<RunningServer> {
-  running ??= startServer();
-  return running;
+/** Daemon mode unless a test/probe explicitly wants an in-process bind. */
+function daemonMode(): boolean {
+  if (process.env.MISTRAL_VIBE_NO_DAEMON === "1") return false;
+  return true;
 }
 
 export default async function mistralVibe(pi: Pi): Promise<void> {
-  const server = await ensureServer();
+  const server = daemonMode() ? await ensureDaemon() : await ensureInProcess();
   providerForm = "oauth";
 
   // /login entry via the config form's `oauth` block — the same mechanism the
@@ -1421,4 +1729,88 @@ function registerCommand(pi: Pi): void {
       else console.log(text);
     },
   });
+}
+
+// ---------- daemon entry ----------
+
+// `MISTRAL_VIBE_DAEMON=1 bun <this file>` runs the standalone server. The
+// state file is written only after the socket is actually listening, so a
+// client that sees it can connect; it is removed on clean exit and whenever
+// the process dies with an exception, so a stale record is never reused.
+// NO_DAEMON wins: `daemonMode()` already refuses the daemon path in that case,
+// so honouring DAEMON here would bind the daemon *and* the in-process server on
+// one port. An inherited DAEMON=1 (omp exports it into the extensions it spawns)
+// must never override an explicit opt-out.
+/**
+ * Is this process a bare JavaScript runtime?
+ *
+ * Only such a process may own the daemon. An agent host (omp.bin under Termux,
+ * or anything that inherited `MISTRAL_VIBE_DAEMON=1`) would instead load this
+ * extension, take the daemon branch, and spawn yet another host — an unbounded
+ * chain of sessions that grab ports and die. Refusing here makes that one clear
+ * error instead.
+ */
+function isBareRuntime(): boolean {
+  // Judged on the binary, not on env: a daemon legitimately inherits the agent's
+  // env (omp exports OMP_MANAGED_INSTALL to every child), but only bun/node can
+  // execute this file. `omp.bin` would instead start a new agent session.
+  const base = basename(process.execPath).toLowerCase();
+  return base === "bun" || base === "bun.exe" || base === "node" || base === "node.exe";
+}
+
+if (process.env.MISTRAL_VIBE_DAEMON === "1" && process.env.MISTRAL_VIBE_NO_DAEMON !== "1" && !isBareRuntime()) {
+  console.error(
+    "[mistral-vibe] MISTRAL_VIBE_DAEMON is set but this process is an agent host, not a JS runtime; " +
+      "refusing to start the daemon here",
+  );
+  process.exit(1);
+}
+
+if (process.env.MISTRAL_VIBE_DAEMON === "1" && process.env.MISTRAL_VIBE_NO_DAEMON !== "1") {
+  // Only the daemon chooses a port. It prefers the recorded/configured one and,
+  // if something else owns it, takes the first free port in the range and
+  // publishes that in the state file. Clients never probe: they read the file,
+  // so a fixed `baseURL` cannot drift onto a stranger's listener.
+  let server: RunningServer | undefined;
+  for (let candidate = PORT; candidate < PORT + PORT_ATTEMPTS && !server; candidate++) {
+    try {
+      server = await bindServer(candidate);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") throw err;
+      const owner = await healthz(candidate, 800);
+      if (owner?.service === SERVICE) {
+        // An earlier daemon already serves this port (and rewrote state).
+        writeState({ service: SERVICE, port: candidate, pid: owner.pid ?? 0, startedAt: owner.startedAt ?? Date.now() });
+        process.exit(0);
+      }
+      console.error(`[mistral-vibe] port ${candidate} is held by "${owner ? "another service" : "an unknown listener"}"; trying the next`);
+    }
+  }
+  if (!server) {
+    console.error(`[mistral-vibe] no free port in ${PORT}-${PORT + PORT_ATTEMPTS - 1}; set MISTRAL_VIBE_PORT`);
+    process.exit(1);
+  }
+  const record: StateFile = { service: SERVICE, port: server.port, pid: process.pid, startedAt: stats.startedAt };
+  writeState(record);
+  let closing = false;
+  const shutdown = async () => {
+    if (closing) return;
+    closing = true;
+    clearState(process.pid);
+    await server.close();
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown());
+  process.on("uncaughtException", (err) => {
+    clearState(process.pid);
+    console.error("[mistral-vibe daemon]", err);
+    process.exit(1);
+  });
+  process.on("unhandledRejection", (err) => {
+    clearState(process.pid);
+    console.error("[mistral-vibe daemon] unhandled rejection", err);
+    process.exit(1);
+  });
+  console.log(`[mistral-vibe] daemon listening on 127.0.0.1:${server.port} (pid ${process.pid})`);
 }

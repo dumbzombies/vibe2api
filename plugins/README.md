@@ -41,8 +41,22 @@ shape clients expect:
 
 - Installs `extensions/mistral-vibe-quota.ts` into `~/.omp/agent` and/or
   `~/.pi/agent` (`OMP_AGENT_DIR` / `PI_AGENT_DIR` override).
-- The extension binds `127.0.0.1:8790` (probing upward) at load and points the
-  provider at it. Quit the agent and the server is gone.
+- The extension owns one daemon per user, preferring `127.0.0.1:8790`. It reads
+  `~/.mistral-vibe/omp-server.json`, verifies `GET /healthz` reports
+  `service: "mistral-vibe-omp"`, and reuses it; with nothing there it spawns the
+  extension file detached (`MISTRAL_VIBE_DAEMON=1 bun <file>`) and waits for the
+  handshake. Clients never probe: the daemon picks a free port in
+  `8790..8799` when something else owns the preferred one and publishes it in
+  the state file, and a port answering with a different `service` is never
+  adopted. The daemon is launched by `bun` (or `node
+  --experimental-strip-types`), found on `PATH` or set via
+  `MISTRAL_VIBE_RUNTIME` — never by `process.execPath`, which under Termux's omp
+  launcher is the agent binary itself. `/healthz` is liveness only and does no network I/O — hosts poll it
+  with a 0.8–1.5 s budget, so its `models` field is the cached catalog size or
+  `null` until the catalog is warm. The daemon outlives the agent, so quitting
+  omp leaves it running; `kill $(jq .pid ~/.mistral-vibe/omp-server.json)` stops it.
+  `MISTRAL_VIBE_NO_DAEMON=1` restores the old in-process bind on
+  `MISTRAL_VIBE_PORT` (tests and smoke probes).
 - Registers the provider with an `oauth` block, so `/login` lists **Mistral
   Vibe** and validates the key against `/v1/billing/budget` before storing it.
 - Models carry real limits (1M context, `mistral-medium-latest` 262144),

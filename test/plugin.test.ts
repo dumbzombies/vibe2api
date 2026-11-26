@@ -14,14 +14,25 @@ const MOCK_PORT = 8999;
 process.env.MISTRAL_BASE = `http://127.0.0.1:${MOCK_PORT}`;
 process.env.MISTRAL_VIBE_KEY = "mstrl_test";
 process.env.MISTRAL_VIBE_PORT = "8870";
+// Tests drive the in-process bind on a throwaway port; the daemon path is
+// exercised separately (test/daemon.test.ts).
+process.env.MISTRAL_VIBE_NO_DAEMON = "1";
+process.env.MISTRAL_VIBE_STATE_DIR = join(osTmpdir(), "mv-test-state");
 process.env.VIBE_KEYS = join(osTmpdir(), "mv-test-keys.json");
 writeFileSync(process.env.VIBE_KEYS, JSON.stringify({ keys: [] }));
 
 type Captured = { auth: string | null; ua: string | null; body: Record<string, unknown> };
 const seen: Captured[] = [];
 // Ticks observed on an "abortable" stream, so a test can prove the plugin stops
-// pulling from upstream when the client disconnects.
-const abortProbe = { ticks: 0, upstreamTick: () => abortProbe.ticks };
+// pulling from upstream when the client disconnects. `cancelled` resolves a
+// deferred so an abort test can await the real cancellation event instead of
+// sleeping for a guessed duration.
+const abortProbe = { ticks: 0, cancelled: 0, upstreamTick: () => abortProbe.ticks };
+let cancelDeferred = Promise.withResolvers<void>();
+const onUpstreamCancel = () => {
+  abortProbe.cancelled++;
+  cancelDeferred.resolve();
+};
 
 const mock = Bun.serve({
   port: MOCK_PORT,
@@ -49,6 +60,20 @@ const mock = Bun.serve({
             abortProbe.ticks++;
             c.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: `t${n} ` }, finish_reason: null }] })}\n\n`));
           },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    }
+    // One chunk, then silence forever — a thinking model between deltas.
+    if (body.model === "silent") {
+      const enc = new TextEncoder();
+      return new Response(
+        new ReadableStream({
+          start(c) {
+            abortProbe.ticks++;
+            c.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { reasoning_content: "hmm" }, finish_reason: null }] })}\n\n`));
+          },
+          cancel: onUpstreamCancel,
         }),
         { headers: { "Content-Type": "text/event-stream" } },
       );
@@ -350,6 +375,20 @@ describe("bug hunt: input handling", () => {
     }
   });
 
+  test("an effort level outside the model's enum never reaches upstream", async () => {
+    // Measured: `off` on GLM is a 422 invalid_request_error for the whole turn,
+    // and `none` is a 400 — GLM accepts only low/high/max. Unmapped values used
+    // to pass through verbatim, so a client sending `none` (what omp does for
+    // thinking levels the model does not declare) broke every GLM turn.
+    for (const effort of ["none", "off", "default", "Minimal"]) {
+      await post({ model: "zai-glm-5-3-flash", messages: [{ role: "user", content: "x" }], reasoning_effort: effort, max_tokens: 8 });
+      expect(seen.at(-1)!.body.reasoning_effort).toBe("low");
+    }
+    // An unlisted model has no enum to clamp against; the value stands.
+    await post({ model: "unlisted-model", messages: [{ role: "user", content: "x" }], reasoning_effort: "none" });
+    expect(seen.at(-1)!.body.reasoning_effort).toBe("none");
+  });
+
   test("prototype keys are not reachable through model/effort lookup", async () => {
     // Before: REASONING_EFFORTS["constructor"]/["__proto__"] hit Object.prototype,
     // so reasoning_effort became an object (`{}`) or vanished entirely.
@@ -389,6 +428,33 @@ describe("bug hunt: local server safety", () => {
     ac.abort();
     await new Promise((res) => setTimeout(res, 900));
     expect(abortProbe.upstreamTick() - before).toBeLessThan(6);
+  });
+
+  test("an abort during upstream silence cancels at once, without a retry", async () => {
+    // Before: the abort signal was only checked between SSE iterations, so a
+    // thinking model that had gone quiet kept its upstream request open for the
+    // whole idle budget (measured: still open 8 s after the abort), and the
+    // disconnect was then treated as a retryable failure, billing a second full
+    // prompt to a client that had hung up.
+    cancelDeferred = Promise.withResolvers<void>();
+    const upstreamBefore = seen.filter((s) => s.body.model === "silent").length;
+    const ac = new AbortController();
+    const r = await fetch(`${base()}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer local" },
+      body: JSON.stringify({ model: "silent", messages: [], stream: true, reasoning_effort: "high" }),
+      signal: ac.signal,
+    });
+    const reader = r.body!.getReader();
+    await reader.read();
+    ac.abort();
+    // Await the real cancellation, with a bound so a regression fails instead of
+    // hanging the suite.
+    await Promise.race([
+      cancelDeferred.promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("upstream never cancelled")), 2000)),
+    ]);
+    expect(seen.filter((s) => s.body.model === "silent").length).toBe(upstreamBefore + 1);
   });
 });
 
@@ -583,6 +649,74 @@ describe("bug hunt: streaming and retry", () => {
       expect(r.status).toBe(200);
       const s1: any = await (await fetch(`${base()}/api/state`)).json();
       expect(s1.keys.configured).toBe(s0.keys.configured);
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  });
+});
+
+describe("bug hunt: failure classification edge cases", () => {
+  test("no configured key at all reports the missing key, not a rejected one", async () => {
+    // Before: `!lastStatus` (no request was even attempted, because the pool was
+    // empty) fell through to `auth-failed`, so the client was told a key Mistral
+    // had "rejected" existed and should be re-logged-in. The real fix — supply
+    // one — lived in an unreachable `no-key` branch.
+    const prev: Record<string, string | undefined> = {};
+    const keys = ["MISTRAL_VIBE_KEY"];
+    for (const k of keys) { prev[k] = process.env[k]; delete process.env[k]; }
+    const prevKeysFile = process.env.VIBE_KEYS;
+    const prevAgentDir = process.env.PI_AGENT_DIR;
+    process.env.VIBE_KEYS = join(osTmpdir(), "mv-no-keys-at-all.json");
+    writeFileSync(process.env.VIBE_KEYS, JSON.stringify({ keys: [] }));
+    process.env.PI_AGENT_DIR = join(osTmpdir(), "mv-no-agent-dir");
+
+    const prevFetch = globalThis.fetch;
+    let hit = 0;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (url.startsWith(process.env.MISTRAL_BASE!)) hit++;
+      return prevFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const r = await post({ model: "mistral-large-4-0", messages: [{ role: "user", content: "x" }] });
+      const j: any = await r.json();
+      expect(r.status).toBe(401);
+      expect(j.error.message).toContain("no Vibe key");
+      expect(j.error.message).not.toContain("rejected");
+      expect(hit).toBe(0); // a request with no credentials must not be sent
+    } finally {
+      globalThis.fetch = prevFetch;
+      for (const k of keys) {
+        if (prev[k] === undefined) delete process.env[k];
+        else process.env[k] = prev[k]!;
+      }
+      if (prevKeysFile === undefined) delete process.env.VIBE_KEYS; else process.env.VIBE_KEYS = prevKeysFile;
+      if (prevAgentDir === undefined) delete process.env.PI_AGENT_DIR; else process.env.PI_AGENT_DIR = prevAgentDir;
+    }
+  });
+
+  test("a 5xx that outlasts the retries is reported as temporary, not passed through raw", async () => {
+    // `transient` was declared and tested but never assigned, so every retry
+    // budget that ended in a 5xx fell through to the raw passthrough response:
+    // the client got Mistral's bare body with no hint that a retry may help.
+    const prevFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (url.startsWith(process.env.MISTRAL_BASE!)) {
+        calls++;
+        return new Response('{"message":"temporary"}', { status: 503 });
+      }
+      return prevFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const r = await post({ model: "mistral-large-4-0", messages: [{ role: "user", content: "x" }] });
+      const j: any = await r.json();
+      expect(calls).toBe(3); // the full retry budget was spent
+      expect(r.status).toBe(503);
+      expect(j.error.message).toContain("temporary error");
+      expect(j.error.upstream_body).toBe('{"message":"temporary"}');
+      expect(j.error.message).not.toContain("/login");
     } finally {
       globalThis.fetch = prevFetch;
     }

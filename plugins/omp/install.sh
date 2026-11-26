@@ -79,6 +79,7 @@ cat <<'EOF'
       /login          pick "Mistral Vibe" and paste your mstrl_… key
       /model          pick a mistral-vibe/* model
       /vibe-usage     used %, $ left, reset date, cache hit rate
-    The provider runs its own loopback server inside the agent (port 8790+):
-    nothing else needs to be running.
+    The provider runs one daemon per user (port from
+    ~/.mistral-vibe/omp-server.json, 8790 by default): nothing else needs to be
+    running, and a second agent reuses the same daemon.
 EOF

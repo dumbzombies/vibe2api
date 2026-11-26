@@ -176,6 +176,13 @@ describe("wire protocol", () => {
     const cases: [string, string | undefined, string | undefined][] = [
       ["zai-glm-5-3", "medium", "low"],
       ["zai-glm-5-3", "minimal", "low"],
+      // `none` and `off` are not GLM enum members; both used to pass through
+      // verbatim (off → 422 invalid_request_error, none → 400). Measured:
+      // GLM accepts only low/high/max.
+      ["zai-glm-5-3-flash", "none", "low"],
+      ["zai-glm-5-3-flash", "off", "low"],
+      ["zai-glm-5-3-flash", "default", "low"],
+      ["zai-glm-5-3-flash", "", undefined],
       ["zai-glm-5-3", "max", "max"],
       ["mistral-medium-latest", "low", "none"],
       ["mistral-medium-latest", "high", "high"],

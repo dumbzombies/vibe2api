@@ -119,6 +119,7 @@ function reasoningText(content) {
 //   mistral-medium-latest    none high
 const GLM_EFFORT = {
   off: 'low',
+  none: 'low',
   minimal: 'low',
   low: 'low',
   // `medium` is not accepted; route to low. Routing it to high is what made
@@ -169,8 +170,21 @@ function mapReasoning(effort, model) {
   // Own-property lookups only: a model or level named "constructor" or
   // "__proto__" would otherwise resolve to an Object.prototype member.
   const table = Object.hasOwn(REASONING_EFFORTS, String(model)) ? REASONING_EFFORTS[String(model)] : undefined;
-  const mapped = table && Object.hasOwn(table, String(effort)) ? table[String(effort)] : undefined;
-  return typeof mapped === 'string' ? mapped : String(effort);
+  // Unlisted model: nothing to clamp against, so the client's value stands.
+  if (!table) return String(effort);
+  if (Object.hasOwn(table, String(effort))) return table[String(effort)];
+  // A level the model does not accept must never reach Mistral verbatim: any
+  // string outside {none,minimal,low,medium,high,xhigh,max} is a 422 for the
+  // whole turn (measured: `off`, `true`, `default`). Floor to the weakest wire
+  // level instead — reasoning tokens are billed against max_tokens, so the
+  // cheapest level is the safe direction.
+  return weakestEffort(table);
+}
+
+/** The lowest-cost wire level in a clamp table. */
+function weakestEffort(table) {
+  const wire = [...new Set(Object.values(table))];
+  return wire.sort((a, b) => (EFFORT_RANK[a] ?? 0) - (EFFORT_RANK[b] ?? 0))[0];
 }
 
 /** Wire-level ordering, for walking an effort ladder downwards. */

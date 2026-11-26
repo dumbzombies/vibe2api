@@ -141,9 +141,11 @@ curl -s https://<your-worker>.workers.dev/health
 ./install.sh omp --omp                    # only ~/.omp/agent
 ```
 
-The extension starts an OpenAI-compatible server on `127.0.0.1:8790+` **inside
-the agent process** and registers the provider against it. Nothing else needs to
-run; quitting the agent stops it.
+The extension runs one daemon per user (prefers `127.0.0.1:8790`, published in
+`~/.mistral-vibe/omp-server.json`, identified by `GET /healthz` →
+`service: "mistral-vibe-omp"`) and registers the provider against it. A second
+agent reuses the running daemon instead of binding another port; the daemon
+stays up after the agent quits. Nothing else needs to run.
 
 ```bash
 # restart the agent, then:
