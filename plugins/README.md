@@ -6,9 +6,13 @@ $300/month Vibe allowance instead of the $30 API budget.
 | plugin | target | self-contained? | gives you |
 |---|---|---|---|
 | `omp/` | omp **and** pi | yes — one daemon per user on loopback | provider, `/login` entry, `/vibe-usage` |
-| `opencode/` | opencode | yes — binds `127.0.0.1:8796` on load | provider block, `/vibe-quota` command |
+| `opencode/` | opencode | yes — binds `127.0.0.1:8810` on load | provider block, `/vibe-quota` command |
 | `hermes/` | hermes | no — its own loopback server, straight to `api.mistral.ai` | provider, `hermes usage` gauge |
-| `shared/` | anything | — | `vibe-quota` script |
+
+`omp/` and `opencode/` are installers only: their plugin sources live in
+[mistral-vibe-pi](https://github.com/dumbzombies/mistral-vibe-pi) and
+[mistral-vibe-opencode](https://github.com/dumbzombies/mistral-vibe-opencode).
+Only the hermes plugin is sourced from this repo.
 
 ```bash
 ./install.sh plugins        # from the repo root: every agent dir that exists
@@ -88,12 +92,38 @@ removal; this repo only wraps the install with the key and cleanup steps below.
 ./install.sh opencode
 ```
 
-- `plugins/mistral-vibe.ts` starts an OpenAI-compatible server on
-  `127.0.0.1:8796` when opencode loads it. opencode evaluates plugin modules
-  even for `opencode models`, so the bind happens at module load; a second
-  opencode process fails to bind and uses the first one's server.
+Source: [dumbzombies/mistral-vibe-opencode](https://github.com/dumbzombies/mistral-vibe-opencode).
+The installer fetches it (or installs from a local checkout via
+`MISTRAL_VIBE_OC_SOURCE`), then merges the provider block into `opencode.jsonc`.
+
+- The plugin starts an OpenAI-compatible server on
+  `127.0.0.1:8810` when opencode loads it. opencode evaluates plugin modules
+  even for `opencode models`, so the bind happens at module load.
+- Port 8810 is fixed, because the provider block's `baseURL` is a constant: a
+  second opencode process reuses a listener that answers `/health` with
+  `service: "mistral-vibe-opencode"`, and a foreign listener is reported instead
+  of taken over (`MISTRAL_VIBE_OC_PORT` moves both the bind and the baseURL).
+- The bound port is published to `~/.mistral-vibe/opencode-server.json`
+  (`MISTRAL_VIBE_STATE_DIR` overrides) as `{service, port, pid, startedAt}`.
+  `vibe-quota` reads it, but only after `/health` confirms the service.
 - The provider block is merged into `opencode.jsonc` (backup
-  `.bak-vibe2api`) with `baseURL: http://127.0.0.1:8796/v1`.
+  `.bak-vibe2api`) with `baseURL: http://127.0.0.1:8810/v1`.
+- Recovery, per the omp/pi extension: a `finish_reason: "length"` turn with no
+  visible text (the budget went to reasoning) and a tool call cut off
+  mid-JSON are both retried at the next lower `reasoning_effort` the model
+  accepts, non-stream and stream. Streaming holds back only the finish chunk
+  and tool-call deltas, so a retry is invisible unless text was already shown.
+- Failure surfacing: `no-key` 401, rejected key 401 (that key only, 10 min
+  cooldown), capacity 429 + `Retry-After: 60` (never disables the key),
+  transient 5xx 502 (also appended to `~/.mistral-vibe/opencode-errors.log`),
+  unreachable upstream 502.
+- Hardening copied from the omp/pi extension: a stream with no `data:` line for
+  `MV_STREAM_IDLE_MS` (default 300 s) is abandoned instead of pinned to the 1 h
+  request timeout; an oversized body is drained so the 413 can actually be read;
+  an unrecognised `reasoning_effort` is floored to the model's weakest wire
+  level instead of 422-ing the turn; browser Origins outside the loopback
+  dashboard are refused and no response carries a wildcard CORS origin;
+  `/api/state` exposes one-way key fingerprints, never key material.
 - Per-model `options.reasoningEffort` is forwarded as `reasoning_effort`.
 - `/vibe-quota` is a TUI command that shells out to `~/.local/bin/vibe-quota`.
   (`opencode run "/vibe-quota"` is just a prompt — it does not run the command.)
@@ -102,15 +132,21 @@ removal; this repo only wraps the install with the key and cleanup steps below.
 
 ```bash
 ./install.sh hermes                        # $HERMES_HOME (default ~/.hermes)
-./install.sh hermes --remote user@host     # copy over ssh and write the key there
+./install.sh hermes --remote user@host     # over ssh; writes the key there
 ./install.sh hermes --container hermes     # docker container; reads its HERMES_HOME
 ```
 
-- Installs a provider plugin at
-  `$HERMES_HOME/plugins/model-providers/mistral-vibe/` and writes
-  `MISTRAL_VIBE_KEY` into `$HERMES_HOME/.env` (mode 600). In a Docker setup,
-  `$HERMES_HOME` is the mounted volume (usually `/opt/data`), which is why the
-  container path asks the container for it instead of assuming `~/.hermes`.
+- Runs `hermes plugins install dumbzombies/mistral-vibe-hermes`, so Hermes owns
+  cloning, updates and removal (`hermes plugins update`, `remove`). The plugin is
+  a real package with `kind: model-provider`, which is what makes the flat
+  `$HERMES_HOME/plugins/<name>` install discoverable. Source override:
+  `MISTRAL_VIBE_HERMES_SOURCE`.
+- Writes `MISTRAL_VIBE_KEY` into `$HERMES_HOME/.env` (mode 600). In a Docker
+  setup `$HERMES_HOME` is the mounted volume (usually `/opt/data`), which is why
+  the container path asks the container for it instead of assuming `~/.hermes`.
+- Removes a `plugins/model-providers/mistral-vibe` copy left by the old
+  file-copy installer: both directories load, so the provider would register
+  twice and the picker would show two rows.
 - **Self-contained**: the plugin starts its own loopback OpenAI-compatible server
   on an ephemeral port inside the Hermes process (stdlib `http.server`, daemon
   thread) and calls `api.mistral.ai` directly with the Vibe user agent and
@@ -125,6 +161,12 @@ removal; this repo only wraps the install with the key and cleanup steps below.
 - `hermes usage --provider mistral-vibe` reads `vibe_budget` from
   `/v1/billing/budget`. The payload's top-level fields describe the *API*
   allowance, so reading them reports the wrong budget.
+- Model rows are normalised like omp's picker: the wire id stays selectable and
+  `discover_models()` supplies the human name plus specs as the row note, so
+  `zai-glm-5-3-flash · GLM 5.3 Flash (Vibe) · 1M ctx, reasoning, vision`.
+  Renaming the id itself would change what reaches the API. `model_aliases`
+  adds `glm`, `glm-flash`, `deepseek`, `large`, `medium` for `/model` and
+  `-m`.
 - `agent.account_usage` is imported *inside* `fetch_account_usage`: a
   module-level import makes provider discovery hit a circular import and silently
   drop the plugin.
@@ -134,8 +176,9 @@ removal; this repo only wraps the install with the key and cleanup steps below.
 
 ## Quota reporting
 
-`shared/vibe-quota.sh` is what every plugin and `/vibe-quota` uses. Three
-sources, in order:
+The quota script ships with the opencode repo
+([`bin/vibe-quota.sh`](https://github.com/dumbzombies/mistral-vibe-opencode)) and
+is what `/vibe-quota` runs. Three sources, in order:
 
 1. `$VIBE_PROXY/api/state` — richest view (pool status, cache rate, counters).
    Only the in-process plugin servers expose it unauthenticated.
@@ -143,8 +186,9 @@ sources, in order:
    accepts an API credential on both the local proxy and the Worker.
 3. Mistral directly (`/v1/billing/budget`) when no proxy answers.
 
-`VIBE_PROXY` defaults to `http://127.0.0.1:8796` (the opencode loopback); point
-it at `http://127.0.0.1:8788` for the standalone proxy or at your Worker URL.
+`VIBE_PROXY` overrides everything; unset, the script reads the opencode plugin's
+published port and falls back to `http://127.0.0.1:8810`. Point it at
+`http://127.0.0.1:8788` for the standalone proxy or at your Worker URL.
 
 ## Note on prompt caching
 

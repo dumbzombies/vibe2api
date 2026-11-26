@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Mistral Vibe quota, proxy-first. Used by both agent plugins and by hand.
+# Mistral Vibe quota, plugin-first. Used by /vibe-quota and by hand.
 #
-# Two sources, in order:
-#   1. `/api/state`  — the in-process plugin servers expose it (omp 8790,
-#                      opencode 8796) and it carries the richest view.
+# Three sources, in order:
+#   1. `/api/state`  — the plugin's in-process server exposes it on 8810 and it
+#                      carries the richest view.
 #   2. `/dashboard/billing/*` — the caller-facing billing routes. The standalone
 #                      proxy and the Worker keep `/api/state` session-only, so a
 #                      script holding just an API key gets 403 there; these two
@@ -16,7 +16,18 @@
 #   vibe-quota --json   raw state (proxy) or raw billing (billing/direct)
 set -u
 
-PROXY="${VIBE_PROXY:-http://127.0.0.1:8796}"
+STATE_FILE="${MISTRAL_VIBE_STATE_DIR:-$HOME/.mistral-vibe}/opencode-server.json"
+
+# The opencode plugin publishes the port it bound, so an install on a
+# non-default MISTRAL_VIBE_OC_PORT is still reachable without VIBE_PROXY.
+# The file outlives a crashed or killed session, so the published port is only
+# trusted when something actually answers there with our own service name.
+oc_port="$(jq -r '.port // empty' "$STATE_FILE" 2>/dev/null || true)"
+if [ -n "$oc_port" ]; then
+  svc="$(curl -fsS --max-time 2 "http://127.0.0.1:$oc_port/health" 2>/dev/null | jq -r '.service // empty' 2>/dev/null || true)"
+  [ "$svc" = "mistral-vibe-opencode" ] || oc_port=""
+fi
+PROXY="${VIBE_PROXY:-http://127.0.0.1:${oc_port:-8810}}"
 KEYS="${VIBE_KEYS:-$HOME/.mistral-vibe/keys.json}"
 VER_FILE="$HOME/.cache/mistral-vibe-version"
 UA_VER="$(cat "$VER_FILE" 2>/dev/null || echo 3.1.5)"

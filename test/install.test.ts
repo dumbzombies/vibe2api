@@ -106,6 +106,9 @@ describe("installers", () => {
     const { code } = await run("install.sh", ["opencode"], {
       OPENCODE_CONFIG_DIR: cfg,
       VIBE2API_BIN: join(scratch, "bin"),
+      // A local checkout stands in for the public repo: the suite must not need
+      // the network, but must still exercise the real installer path.
+      MISTRAL_VIBE_OC_SOURCE: join(import.meta.dir, "fixtures", "opencode-repo"),
     });
     expect(code).toBe(0);
     const conf = JSON.parse(readFileSync(join(cfg, "opencode.jsonc"), "utf8"));
@@ -120,7 +123,11 @@ describe("installers", () => {
   test("opencode: a second run is idempotent", async () => {
     const cfg = join(scratch, "oc2");
     mkdirSync(cfg, { recursive: true });
-    const env = { OPENCODE_CONFIG_DIR: cfg, VIBE2API_BIN: join(scratch, "bin2") };
+    const env = {
+      OPENCODE_CONFIG_DIR: cfg,
+      VIBE2API_BIN: join(scratch, "bin2"),
+      MISTRAL_VIBE_OC_SOURCE: join(import.meta.dir, "fixtures", "opencode-repo"),
+    };
     expect((await run("install.sh", ["opencode"], env)).code).toBe(0);
     const first = readFileSync(join(cfg, "opencode.jsonc"), "utf8");
     expect((await run("install.sh", ["opencode"], env)).code).toBe(0);

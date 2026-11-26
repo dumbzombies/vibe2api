@@ -5,7 +5,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Mistral Vibe",
       "options": {
-        "baseURL": "http://127.0.0.1:8796/v1",
+        "baseURL": "http://127.0.0.1:8810/v1",
         "apiKey": "local"
       },
       "models": {
