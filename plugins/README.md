@@ -7,7 +7,7 @@ $300/month Vibe allowance instead of the $30 API budget.
 |---|---|---|---|
 | `omp/` | omp **and** pi | yes — one daemon per user on loopback | provider, `/login` entry, `/vibe-usage` |
 | `opencode/` | opencode | yes — binds `127.0.0.1:8796` on load | provider block, `/vibe-quota` command |
-| `hermes/` | hermes | no — talks to the proxy/Worker | provider, `hermes usage` gauge |
+| `hermes/` | hermes | no — its own loopback server, straight to `api.mistral.ai` | provider, `hermes usage` gauge |
 | `shared/` | anything | — | `vibe-quota` script |
 
 ```bash
@@ -103,20 +103,34 @@ removal; this repo only wraps the install with the key and cleanup steps below.
 ```bash
 ./install.sh hermes                        # $HERMES_HOME (default ~/.hermes)
 ./install.sh hermes --remote user@host     # copy over ssh and write the key there
+./install.sh hermes --container hermes     # docker container; reads its HERMES_HOME
 ```
 
 - Installs a provider plugin at
   `$HERMES_HOME/plugins/model-providers/mistral-vibe/` and writes
   `MISTRAL_VIBE_KEY` into `$HERMES_HOME/.env` (mode 600). In a Docker setup,
-  `$HERMES_HOME` is the mounted volume.
-- `hermes usage --provider mistral-vibe` reads
-  `/dashboard/billing/usage` — the caller-facing route — so it works with an API
-  key. `/api/state` is session-only and would answer 403.
+  `$HERMES_HOME` is the mounted volume (usually `/opt/data`), which is why the
+  container path asks the container for it instead of assuming `~/.hermes`.
+- **Self-contained**: the plugin starts its own loopback OpenAI-compatible server
+  on an ephemeral port inside the Hermes process (stdlib `http.server`, daemon
+  thread) and calls `api.mistral.ai` directly with the Vibe user agent and
+  `metadata.call_source`. No proxy, no Worker, no daemon, no open port to
+  publish. `create_client()` is the supported hook for this — it hands Hermes a
+  stock `openai.OpenAI` pointed at that server, so retries, streaming and tool
+  parsing stay upstream's.
+- Request shaping happens in one place (`normalize_request`) and covers what
+  Mistral rejects: `store`/`service_tier`/`safety_identifier`, `reasoning_effort`
+  outside the model's set, `developer` role, replayed `reasoning_content`,
+  `max_completion_tokens`, and `temperature: 0` without `top_p: 1`.
+- `hermes usage --provider mistral-vibe` reads `vibe_budget` from
+  `/v1/billing/budget`. The payload's top-level fields describe the *API*
+  allowance, so reading them reports the wrong budget.
 - `agent.account_usage` is imported *inside* `fetch_account_usage`: a
   module-level import makes provider discovery hit a circular import and silently
   drop the plugin.
-- Default endpoint is the local proxy (`http://127.0.0.1:8788/v1`); set
-  `MISTRAL_VIBE_BASE_URL=https://your-worker.workers.dev/v1` for a Worker.
+- Tests: `test/fixtures/hermes_plugin_check.py` (run from `bun test`) stubs the
+  Hermes imports, points `MISTRAL_BASE` at a local fake upstream, and drives the
+  plugin's own server — no key, no network.
 
 ## Quota reporting
 

@@ -4,18 +4,21 @@
 #   ./install.sh                         # current host ($HERMES_HOME or ~/.hermes)
 #   ./install.sh --remote user@host      # copy over ssh and write the key there
 #   ./install.sh --key mstrl_…           # use this key instead of the local pool
+#   ./install.sh --container NAME        # docker container whose HERMES_HOME it writes
 #
-# Point it at a deployed Worker with MISTRAL_VIBE_BASE_URL; the default is the
-# local proxy on 127.0.0.1:8788.
+# The plugin is self-contained: it runs its own loopback server inside the
+# Hermes process and calls api.mistral.ai directly, so there is no proxy, no
+# Worker and no extra daemon to deploy. Only a Vibe key is needed.
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/../../install/lib.sh"
 
 home_dir="${HERMES_HOME:-$HOME/.hermes}"
-remote=""; key=""
+remote=""; container=""; key=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --remote) remote="${2:?host}"; shift 2 ;;
+    --container) container="${2:?name}"; shift 2 ;;
     --key) key="${2:?key}"; shift 2 ;;
     --dry-run) VIBE2API_DRY_RUN=1; export VIBE2API_DRY_RUN; shift ;;
     -h|--help) awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"; exit 0 ;;
@@ -25,7 +28,7 @@ done
 [ -n "$key" ] || key="$(vibe_key || true)"
 
 # Replace MISTRAL_VIBE_KEY in <home>/.env, keeping every other line, mode 600.
-# Local and remote both run this exact program, so they cannot drift.
+# Local, remote and container paths run this exact program, so they cannot drift.
 write_env_py() {
   cat <<'PY'
 import os, sys
@@ -43,6 +46,37 @@ PY
 write_env() { write_env_py | python3 - "$1" "$2"; }
 
 files=(__init__.py plugin.yaml README.md)
+
+if [ -n "$container" ]; then
+  step "installing into container $container"
+  # HERMES_HOME inside the image is /opt/data, not the caller's home.
+  target_home=""
+  if [ "$VIBE2API_DRY_RUN" = 1 ]; then
+    note "would read HERMES_HOME from $container (default /opt/data)"
+    target_home="/opt/data"
+  else
+    target_home="$(docker exec "$container" printenv HERMES_HOME 2>/dev/null || true)"
+    [ -n "$target_home" ] || target_home="/opt/data"
+  fi
+  plugdir="$target_home/plugins/model-providers/mistral-vibe"
+  do_run docker exec "$container" mkdir -p "$plugdir"
+  for f in "${files[@]}"; do
+    if [ "$VIBE2API_DRY_RUN" = 1 ]; then
+      note "would copy $f -> $container:$plugdir/$f"
+    else
+      docker exec -i "$container" sh -c "cat > '$plugdir/$f'" < "$here/model-providers/mistral-vibe/$f"
+    fi
+  done
+  if [ -z "$key" ]; then
+    warn "no Vibe key found; set MISTRAL_VIBE_KEY in $target_home/.env in $container"
+  elif [ "$VIBE2API_DRY_RUN" = 1 ]; then
+    note "would write MISTRAL_VIBE_KEY into $target_home/.env in $container"
+  else
+    write_env_py | docker exec -i "$container" python3 - "$target_home" "$key"
+  fi
+  step "verify: docker exec $container hermes doctor"
+  exit 0
+fi
 
 if [ -n "$remote" ]; then
   step "installing on $remote"
@@ -83,7 +117,7 @@ fi
 
 step "next"
 cat <<'EOF'
-    hermes doctor                                  # provider appears
+    hermes doctor                                  # provider appears, /models probe passes
     hermes usage --provider mistral-vibe           # Vibe month gauge
     hermes -z "reply OK" --provider mistral-vibe -m zai-glm-5-3-flash
 EOF

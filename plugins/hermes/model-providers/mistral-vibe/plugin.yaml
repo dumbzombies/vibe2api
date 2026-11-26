@@ -1,6 +1,6 @@
 name: mistral-vibe
 kind: model-provider
-version: 1.0.0
+version: 2.0.0
 manifest_version: 2
-description: "Mistral Vibe — Mistral models billed against the Vibe allowance, through a mistral-vibe proxy."
-author: local
+description: "Mistral Vibe — Mistral models billed against the Vibe allowance. Runs its own loopback server inside Hermes; no proxy or daemon."
+author: dumbzombies

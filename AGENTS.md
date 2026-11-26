@@ -54,13 +54,21 @@ streaming and non-streaming.
   per-model `options.reasoningEffort`, hermes provider defaults.
 - The hermes plugin keeps `agent.account_usage` imports inside
   `fetch_account_usage`; a top-level import breaks provider discovery.
-- hermes on Hostinger runs in the `hermes` container (`docker exec`), and
-  `hermes usage` passes no credentials to the hook, so the plugin resolves
-  `MISTRAL_VIBE_KEY`/`MISTRAL_VIBE_BASE_URL` from env or `$HERMES_HOME/.env`.
-- The omp plugin lives in its own repo (`mistral-vibe-pi`) and the opencode
-  plugin here; both are self-contained: each owns a loopback OpenAI-compatible
-  server and calls `api.mistral.ai` with the Vibe UA directly.
-  The omp plugin runs it as one daemon per user
+- All three in-agent plugins (omp, opencode, hermes) are self-contained: each
+  owns a loopback OpenAI-compatible server and calls `api.mistral.ai` with the
+  Vibe UA plus `metadata.call_source`. None may depend on `src/server.js`, the
+  Worker, or an external proxy.
+- The hermes one runs that server on an ephemeral port inside the Hermes
+  process via `create_client()` — no daemon, no port to publish, nothing to
+  deploy. Its `hermes usage` hook reads `vibe_budget` from `/v1/billing/budget`
+  (the top-level fields of that payload are the API allowance, not Vibe) and
+  resolves its key from env or `$HERMES_HOME/.env`, because `hermes usage`
+  passes no credentials.
+- hermes on Hostinger runs in the `hermes` container and `HERMES_HOME` is
+  `/opt/data`, so `install.sh hermes --container hermes` asks the container for
+  the path instead of assuming `~/.hermes`.
+- The omp plugin lives in its own repo (`mistral-vibe-pi`), the opencode plugin
+  here. The omp plugin runs its server as one daemon per user
   (`~/.mistral-vibe/omp-server.json` + `/healthz` `service: "mistral-vibe-omp"`,
   detached spawn); `install.sh omp` installs that repo, it does not copy files. Clients never
   probe: the daemon picks the port and publishes it, and a port answering with a
@@ -68,9 +76,8 @@ streaming and non-streaming.
   `bun`/`node` (`MISTRAL_VIBE_RUNTIME` overrides), never with
   `process.execPath`: under Termux's omp launcher that is `omp.bin`, and
   spawning it starts an agent session that loads the extension and spawns
-  another, unbounded. The opencode plugin binds inside the
-  agent on 8796. They must not depend on `src/server.js`, the Worker, or any env
-  endpoint; `MISTRAL_BASE` is the only override (tests).
+  another, unbounded. The opencode plugin binds inside the agent on 8796.
+  `MISTRAL_BASE` is the only upstream override (tests).
   `MISTRAL_VIBE_NO_DAEMON=1` keeps the omp plugin in-process for tests.
 - The opencode plugin starts its server at module load: this build evaluates
   plugin modules but never calls the exported `server` hook. opencode also
