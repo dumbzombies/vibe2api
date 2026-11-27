@@ -254,7 +254,7 @@ python3 test/sdk_e2e.py # official openai + anthropic SDKs against a live server
 94 tests: the shared core against a mock upstream, the *built* Worker bundle (so
 the deployed code path is what runs, not a source copy), the real `src/server.js`
 as a child process (aborted streams, port conflicts, crash logging), and the
-installers against scratch directories — including the plugin legs, which run the
+installers against scratch directories, including the plugin legs, which run the
 hosts' own CLIs against local fixture packages so no test needs the network.
 
 ## Getting a Vibe-scoped key
