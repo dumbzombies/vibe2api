@@ -15,3 +15,6 @@ keys.json
 # Python bytecode from syntax checks
 __pycache__/
 *.pyc
+
+# Private deploy overlay (production hostname + KV id)
+cfwork/wrangler.deploy.jsonc

@@ -138,6 +138,24 @@ npm run test:all                          # builds the bundle, then tests it
 curl -s https://<your-worker>.workers.dev/health
 ```
 
+**Redeploying an existing deployment.** The script name is what receives the
+upload, so a name that drifted from production deploys a brand-new Worker that
+serves no traffic while the old one keeps answering. Check what the live
+hostname is actually bound to, and deploy with a local overlay that pins the
+production `name`, `routes` and `kv_namespaces` (`wrangler.deploy.jsonc`, which
+stays out of git because it holds a hostname and a KV id):
+
+```bash
+curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains" \
+  | grep -o '"hostname"[^}]*' | grep <your-subdomain>
+cd cfwork && npx wrangler deploy -c wrangler.deploy.jsonc
+```
+
+A deploy that silently drops `env.KV` loses the dashboard password hash and
+every minted `mv-…` key, so confirm the binding line appears in the upload
+output.
+
 ### 3. Agent plugins
 
 Each plugin lives in its own repo and installs with its host's native command, so
