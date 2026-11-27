@@ -54,18 +54,22 @@ against Mistral's own counters: one proxied call moved `vibe_budget` by
    deployment holds the Vibe key and hands out revocable `mv-…` proxy keys,
    instead of copying your key around.
 
-## Four ways to run it
+## What lives here
 
-| target | what it is | needs | picks up |
-|---|---|---|---|
-| **local proxy** | `src/server.js`, `node:http`, Bun or Node | Bun or Node 20+ | OpenAI + Anthropic SDKs, any HTTP client, a dashboard |
-| **Cloudflare Worker** | `cfwork/worker.js` importing the same core | a Cloudflare account | the same API from anywhere, no machine to keep on |
-| **omp / pi extension** | self-contained plugin, binds its own loopback server inside the agent | omp or pi | `/login` entry, `/model mistral-vibe/*`, `/vibe-usage` |
-| **opencode / hermes plugin** | same idea, different host layout | opencode or hermes | provider + `/vibe-quota` / `hermes usage` |
+This repo is the proxy and the Worker. The agent plugins are separate repos, each
+installed by its host's own command:
 
-All four share one implementation of the translation logic (`src/core.js` for
-the server and the Worker; the plugins carry an equivalent in-process copy so
-they need no daemon).
+| repo | host | install |
+|---|---|---|
+| **vibe2api** (here) | OpenAI/Anthropic clients, any HTTP client | `./install.sh local` or `./install.sh worker` |
+| [mistral-vibe-pi](https://github.com/dumbzombies/mistral-vibe-pi) | omp, pi, pi-bolt | `omp plugin install github:dumbzombies/mistral-vibe-pi` |
+| [mistral-vibe-opencode](https://github.com/dumbzombies/mistral-vibe-opencode) | opencode | `curl -fsSL …/install.sh \| bash` |
+| [mistral-vibe-hermes](https://github.com/dumbzombies/mistral-vibe-hermes) | hermes | `hermes plugins install dumbzombies/mistral-vibe-hermes` |
+
+They share the translation logic: the server and the Worker run `src/core.js`,
+and each plugin carries an equivalent in-process copy so it needs no daemon and
+no proxy. Point a plugin at a Worker with `MISTRAL_BASE` if you want the proxy in
+the path too.
 
 ## Install
 
@@ -134,52 +138,22 @@ npm run test:all                          # builds the bundle, then tests it
 curl -s https://<your-worker>.workers.dev/health
 ```
 
-### 3. omp and pi
+### 3. Agent plugins
+
+Each plugin lives in its own repo and installs with its host's native command, so
+the host owns loading, updates and removal:
 
 ```bash
-./install.sh omp                          # omp and/or pi, whichever is installed
-./install.sh omp --omp                    # only omp
-./install.sh omp --pi                     # only pi
+omp plugin install github:dumbzombies/mistral-vibe-pi      # omp
+pi  install       git:github.com/dumbzombies/mistral-vibe-pi   # pi
+curl -fsSL https://raw.githubusercontent.com/dumbzombies/mistral-vibe-opencode/main/install.sh | bash
+hermes plugins install dumbzombies/mistral-vibe-hermes
 ```
 
-Installs [dumbzombies/mistral-vibe-pi](https://github.com/dumbzombies/mistral-vibe-pi)
-with the agents' own commands (`omp plugin install`, `pi install`), so they own
-loading, updates and removal: `omp plugin list` shows `mistral-vibe-pi@…` and
-`pi list` shows the package. Nothing is copied into `~/.omp/agent/extensions`;
-a loose extension file plus the package would register the provider and
-`/vibe-usage` twice, so the installer deletes any copy an older version left
-behind. Removal is `omp plugin uninstall mistral-vibe-pi` /
-`pi remove git:github.com/dumbzombies/mistral-vibe-pi`.
-
-The plugin runs one daemon per user (prefers `127.0.0.1:8790`, published in
-`~/.mistral-vibe/omp-server.json`, identified by `GET /healthz` →
-`service: "mistral-vibe-omp"`) and registers the provider against it. A second
-agent reuses the running daemon instead of binding another port; the daemon
-stays up after the agent quits. Nothing else needs to run.
-
-```bash
-# restart the agent, then:
-/login          # pick "Mistral Vibe", paste your mstrl_… key (validated before storing)
-/model          # pick a mistral-vibe/* model
-/vibe-usage     # used %, $ left, reset date, cache hit rate
-```
-
-The `/login` entry is registered through the extension's `oauth` block, the same
-mechanism pi's bundled providers use, so the key lands in `auth.json` and is
-picked up mid-session.
-
-### 4. opencode and hermes
-
-```bash
-./install.sh opencode                     # plugin + provider block + /vibe-quota
-./install.sh hermes                       # provider plugin + quota skill + MISTRAL_VIBE_KEY
-./install.sh hermes --remote user@host    # install it on another machine
-```
-
-opencode needs a server rather than a plain `baseURL`: its OpenAI-compatible
-client rejects Mistral's typed content parts (`Invalid stream event`), which is
-exactly what the plugin's loopback server rewrites. hermes points at the local
-proxy by default; set `MISTRAL_VIBE_BASE_URL=https://…/v1` for a Worker.
+`./install.sh omp|opencode|hermes` runs those same commands, and
+`./install.sh plugins` does all three, for the case where you want one entry
+point. Each is documented in its own repo: what the provider registers, the
+daemon or loopback port it owns, and how to remove it.
 
 ## Endpoints
 
@@ -277,10 +251,11 @@ bun test                # skips the 23 Worker-bundle tests when .wbuild/ is abse
 python3 test/sdk_e2e.py # official openai + anthropic SDKs against a live server
 ```
 
-140 tests: the shared core against a mock upstream, the *built* Worker bundle
-(so the deployed code path is what runs, not a source copy), both plugin
-implementations, the real `src/server.js` as a child process (aborted streams,
-port conflicts, crash logging), and the installers against scratch directories.
+94 tests: the shared core against a mock upstream, the *built* Worker bundle (so
+the deployed code path is what runs, not a source copy), the real `src/server.js`
+as a child process (aborted streams, port conflicts, crash logging), and the
+installers against scratch directories — including the plugin legs, which run the
+hosts' own CLIs against local fixture packages so no test needs the network.
 
 ## Getting a Vibe-scoped key
 
@@ -297,13 +272,13 @@ src/core.js       all shared logic: routing, auth, translation, billing (Web-sta
 src/server.js     local entry — node:http, runs on Bun and Node
 src/ui.html       dashboard (served by both the local server and the Worker)
 cfwork/           Worker entry + wrangler config
-plugins/omp/      omp/pi plugin package (daemon server + /login + /vibe-usage)
-plugins/opencode/ opencode plugin + command
-plugins/hermes/   hermes model-provider plugin
-plugins/shared/   vibe-quota.sh (proxy, then billing, then Mistral direct)
-install/          one-shot installers behind ./install.sh
-test/             bun test suites + the Python SDK e2e script
+install/          local + Worker installers behind ./install.sh
+test/             bun test suites, fixtures, the Python SDK e2e script
 ```
+
+The agent plugins are separate repos: [mistral-vibe-pi](https://github.com/dumbzombies/mistral-vibe-pi),
+[mistral-vibe-opencode](https://github.com/dumbzombies/mistral-vibe-opencode),
+[mistral-vibe-hermes](https://github.com/dumbzombies/mistral-vibe-hermes).
 
 ## Licence
 

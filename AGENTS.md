@@ -18,11 +18,12 @@ streaming and non-streaming.
 - `test/core.test.ts` — mock-upstream suite (`bun test`)
 - `test/worker.test.ts` — runs the wrangler-built Worker bundle (`npm run test:all`)
 - `test/install.test.ts` — runs each installer against a scratch HOME
-- `plugins/` — the hermes provider plugin, plus installers for
-  [mistral-vibe-pi](https://github.com/dumbzombies/mistral-vibe-pi) and
-  [mistral-vibe-opencode](https://github.com/dumbzombies/mistral-vibe-opencode)
-  (`plugins/README.md`). Both plugin sources and their tests live in those repos,
-  not here; the installers fetch or install from them
+- `plugins/` is gone. The three agent plugins live in their own repos —
+  [mistral-vibe-pi](https://github.com/dumbzombies/mistral-vibe-pi),
+  [mistral-vibe-opencode](https://github.com/dumbzombies/mistral-vibe-opencode),
+  [mistral-vibe-hermes](https://github.com/dumbzombies/mistral-vibe-hermes) — and
+  install with their host's own command. `install.sh` delegates to them and copies
+  no plugin files, so a `git pull` here cannot half-update a plugin
 - `install.sh` + `install/` — one-shot installers (`./install.sh --help`)
 
 ## Commands
@@ -53,50 +54,9 @@ streaming and non-streaming.
   to what the Vibe endpoint accepts; `/v1/models` carries context and capability
   metadata. Clients set the level themselves: omp `--thinking`, opencode
   per-model `options.reasoningEffort`, hermes provider defaults.
-- The hermes plugin keeps `agent.account_usage` imports inside
-  `fetch_account_usage`; a top-level import breaks provider discovery.
-- All three in-agent plugins (omp, opencode, hermes) are self-contained: each
-  owns a loopback OpenAI-compatible server and calls `api.mistral.ai` with the
-  Vibe UA plus `metadata.call_source`. None may depend on `src/server.js`, the
-  Worker, or an external proxy.
-- The hermes one runs that server on an ephemeral port inside the Hermes
-  process via `create_client()` — no daemon, no port to publish, nothing to
-  deploy. Its `hermes usage` hook reads `vibe_budget` from `/v1/billing/budget`
-  (the top-level fields of that payload are the API allowance, not Vibe) and
-  resolves its key from env or `$HERMES_HOME/.env`, because `hermes usage`
-  passes no credentials.
-- hermes picker rows are normalised the omp way: the wire id stays the
-  selectable value and `discover_models()` returns `{id, label, note}`, whose
-  note the picker renders dim beside the id. Never rename an id to make it
-  pretty — that changes what reaches the API.
-- The hermes plugin lives in its own repo (`mistral-vibe-hermes`) and installs
-  with `hermes plugins install`: a flat `$HERMES_HOME/plugins/<name>` dir whose
-  manifest declares `kind: model-provider` is what discovery imports. Two
-  locations load (flat install + `plugins/model-providers/`), so never leave a
-  copy in both.
-- hermes on Hostinger runs in the `hermes` container and `HERMES_HOME` is
-  `/opt/data`, so `install.sh hermes --container hermes` asks the container for
-  the path instead of assuming `~/.hermes`.
-- The omp plugin lives in its own repo (`mistral-vibe-pi`) and the opencode
-  plugin in another (`mistral-vibe-opencode`); both installers delegate to those
-  repos instead of copying files, and only the hermes plugin is sourced here.
-  The omp plugin runs its server as one daemon per user
-  (`~/.mistral-vibe/omp-server.json` + `/healthz` `service: "mistral-vibe-omp"`,
-  detached spawn); `install.sh omp` installs that repo, it does not copy files. Clients never
-  probe: the daemon picks the port and publishes it, and a port answering with a
-  different `service` is never adopted. The daemon is spawned with a resolved
-  `bun`/`node` (`MISTRAL_VIBE_RUNTIME` overrides), never with
-  `process.execPath`: under Termux's omp launcher that is `omp.bin`, and
-  spawning it starts an agent session that loads the extension and spawns
-  another, unbounded.
-  `MISTRAL_VIBE_NO_DAEMON=1` keeps the omp plugin in-process for tests.
-- The opencode plugin (repo `mistral-vibe-opencode`) binds inside the agent on
-  8810, fixed, because its provider baseURL is a constant: a second opencode
-  process reuses a listener whose `/health` reports
-  `service: "mistral-vibe-opencode"` and refuses a foreign one, and the bound
-  port is published to `~/.mistral-vibe/opencode-server.json`. It starts its
-  server at module load, since opencode evaluates plugin modules but never calls
-  an exported `server` hook. Slash commands live in
-  `~/.config/opencode/command/` (singular). `MISTRAL_BASE` is its only upstream
-  override (tests); `MISTRAL_VIBE_OC_SOURCE` points the installer at a checkout
-  or fork.
+- Each plugin owns a loopback OpenAI-compatible server inside its host process and
+  calls `api.mistral.ai` with the Vibe UA plus `metadata.call_source`. None may
+  depend on `src/server.js`, the Worker, or an external proxy; `MISTRAL_BASE` is
+  the only upstream override. That contract, the picker naming and the daemon/port
+  rules are documented in the plugin repos, not here.
+

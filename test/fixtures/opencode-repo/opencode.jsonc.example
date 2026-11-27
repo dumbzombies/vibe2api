@@ -1,55 +1,10 @@
 {
-  "$schema": "https://opencode.ai/config.json",
   "provider": {
     "mistral-vibe": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Mistral Vibe",
-      "options": {
-        "baseURL": "http://127.0.0.1:8810/v1",
-        "apiKey": "local"
-      },
-      "models": {
-        "zai-glm-5-3": {
-          "name": "GLM 5.3 (Vibe)",
-          "reasoning": true,
-          "attachment": false,
-          "tool_call": true,
-          "limit": { "context": 1048576, "output": 32768 },
-          "options": { "reasoningEffort": "medium" }
-        },
-        "zai-glm-5-3-flash": {
-          "name": "GLM 5.3 Flash (Vibe)",
-          "reasoning": true,
-          "attachment": true,
-          "tool_call": true,
-          "limit": { "context": 1048576, "output": 16384 },
-          "options": { "reasoningEffort": "medium" }
-        },
-        "deepseek-v4-1-flash-1017": {
-          "name": "DeepSeek V4.1 Flash (Vibe)",
-          "reasoning": true,
-          "attachment": true,
-          "tool_call": true,
-          "limit": { "context": 1048576, "output": 32768 },
-          "options": { "reasoningEffort": "medium" }
-        },
-        "mistral-large-4-0": {
-          "name": "Mistral Large 4 (Vibe)",
-          "reasoning": true,
-          "attachment": true,
-          "tool_call": true,
-          "limit": { "context": 1048576, "output": 32768 },
-          "options": { "reasoningEffort": "medium" }
-        },
-        "mistral-medium-latest": {
-          "name": "Mistral Medium (Vibe)",
-          "reasoning": true,
-          "attachment": true,
-          "tool_call": true,
-          "limit": { "context": 262144, "output": 32768 },
-          "options": { "reasoningEffort": "medium" }
-        }
-      }
+      "options": { "baseURL": "http://127.0.0.1:8810/v1", "apiKey": "local" },
+      "models": { "zai-glm-5-3-flash": { "name": "GLM 5.3 Flash (Vibe)" } }
     }
   }
 }
