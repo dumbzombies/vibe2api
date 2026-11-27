@@ -325,7 +325,6 @@
             <span id="apiBudget">–</span>
           </div>
           <div class="statrow">
-            <div class="item"><span class="k">uptime</span><span class="v mono" id="sUptime">–</span></div>
             <div class="item"><span class="k">requests</span><span class="v mono" id="sReqs">–</span></div>
             <div class="item"><span class="k">errors</span><span class="v mono" id="sErrs">–</span></div>
             <div class="item"><span class="k">tokens in / out</span><span class="v mono" id="sToks">–</span></div>
@@ -511,12 +510,6 @@ function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 1600);
 }
-function fmtDur(s) {
-  if (s < 60) return s + "s";
-  if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s";
-  if (s < 86400) return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
-  return Math.floor(s / 86400) + "d " + Math.floor((s % 86400) / 3600) + "h";
-}
 function fmtNum(n) { return (n ?? 0).toLocaleString(); }
 
 function setPill(cls, text) { $("statusPill").className = "status " + cls; $("statusTxt").textContent = text; }
@@ -578,7 +571,6 @@ function render() {
   $("apiBudget").textContent = ab
     ? "Separate free API allowance ($" + (ab.initial_budget ?? 30).toFixed(0) + "/month, " + (ab.usage_percentage ?? 0).toFixed(2) + "% used) — this proxy bills the Vibe allowance, not this one."
     : "";
-  $("sUptime").textContent = fmtDur(state.uptime_s);
   $("sReqs").textContent = fmtNum(state.requests.total);
   $("sErrs").textContent = fmtNum(state.requests.errors);
   $("sToks").textContent = fmtNum(state.requests.tokens_in) + " / " + fmtNum(state.requests.tokens_out) +

@@ -1181,7 +1181,7 @@ async function handleAnthropic(ab, env, requestId) {
 
 // ---- Dashboard state ----
 
-const stats = { startedAt: Date.now(), total: 0, errors: 0, tokensIn: 0, tokensOut: 0, tokensCached: 0, buckets: [], log: [] };
+const stats = { total: 0, errors: 0, tokensIn: 0, tokensOut: 0, tokensCached: 0, buckets: [], log: [] };
 
 function track(e) {
   stats.total++;
@@ -1342,7 +1342,6 @@ async function apiState(env) {
     ok: true,
     version: CONFIG.PROJECT_VERSION,
     user_agent: vibeUserAgentNow(),
-    uptime_s: Math.round((Date.now() - stats.startedAt) / 1000),
     // Which way this deployment is configured, so the dashboard can explain what
     // a caller must send without the operator reading the source.
     mode: deploymentMode(env),
