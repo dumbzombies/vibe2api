@@ -140,7 +140,13 @@ run_hermes() {
   local dir="${HERMES_HOME:-$HOME/.hermes}"
   step "hermes: plugins install $src"
   if [ "$VIBE2API_DRY_RUN" != 1 ]; then have hermes || die "hermes not found on PATH"; fi
-  do_run hermes plugins install "$src" --yes-deps --enable
+  # --yes-deps (answers the dependency consent prompt) exists from Hermes 0.20;
+  # older builds reject the flag outright, so only pass it when it is offered.
+  local flags="--enable"
+  if hermes plugins install --help 2>/dev/null | grep -q -- "--yes-deps"; then
+    flags="--yes-deps --enable"
+  fi
+  do_run hermes plugins install "$src" $flags
   if [ "$VIBE2API_DRY_RUN" != 1 ]; then
     hermes plugins list 2>/dev/null | grep -q mistral-vibe \
       || die "hermes did not list mistral-vibe; run: hermes plugins doctor mistral-vibe"
